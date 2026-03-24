@@ -1,4 +1,4 @@
-// search/engine.ts — DuckDuckGo HTML search engine (no API key, no external service)
+// search/engine.ts — Search engine with DuckDuckGo (default) and Tavily (optional) providers
 
 import { DEFAULT_CONFIG } from './types.js';
 import type { SearchResult, SearchConfig } from './types.js';
@@ -186,4 +186,65 @@ export async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Search using Tavily API.
+ * Requires TAVILY_API_KEY env var or explicit apiKey in config.
+ * Maps Tavily results to the existing SearchResult interface.
+ */
+export async function searchWithTavily(
+  query: string,
+  config: SearchConfig = {},
+): Promise<readonly SearchResult[]> {
+  const cfg = { ...DEFAULT_CONFIG, ...config };
+
+  const { tavily } = await import('@tavily/core');
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) {
+    throw new Error('TAVILY_API_KEY environment variable is required for Tavily search');
+  }
+
+  const client = tavily({ apiKey });
+  const response = await client.search(query, {
+    maxResults: cfg.maxResults,
+    searchDepth: 'basic',
+    topic: 'general',
+  });
+
+  return (response.results ?? []).map((r: { title?: string; url?: string; content?: string }) => ({
+    title: r.title ?? '',
+    url: r.url ?? '',
+    snippet: r.content ?? '',
+  }));
+}
+
+/**
+ * Auto-dispatching search: picks Tavily or DuckDuckGo based on config/env.
+ *
+ * Priority:
+ *   1. config.searchProvider === 'tavily' → Tavily
+ *   2. config.searchProvider === 'duckduckgo' → DuckDuckGo
+ *   3. config.searchProvider === 'auto' (or unset) → Tavily if TAVILY_API_KEY is set, else DuckDuckGo
+ */
+export async function searchAuto(
+  query: string,
+  config: SearchConfig = {},
+): Promise<readonly SearchResult[]> {
+  const provider = config.searchProvider ?? 'auto';
+
+  if (provider === 'tavily') {
+    return searchWithTavily(query, config);
+  }
+
+  if (provider === 'duckduckgo') {
+    return search(query, config);
+  }
+
+  // 'auto' mode: use Tavily if API key is available, otherwise DuckDuckGo
+  if (process.env.TAVILY_API_KEY) {
+    return searchWithTavily(query, config);
+  }
+
+  return search(query, config);
 }
