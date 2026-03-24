@@ -50,6 +50,9 @@ export interface AutoStudyResult {
   experiencesSaved: number;
 }
 
+/** Search provider selection */
+export type SearchProvider = 'duckduckgo' | 'tavily' | 'auto';
+
 /** Search configuration */
 export interface SearchConfig {
   readonly maxResults?: number;
@@ -59,6 +62,7 @@ export interface SearchConfig {
   readonly timeout?: number;
   readonly userAgent?: string;
   readonly timeRange?: string;
+  readonly searchProvider?: SearchProvider;
   readonly llm?: {
     readonly provider: string;
     readonly model: string;
@@ -74,5 +78,6 @@ export const DEFAULT_CONFIG: Readonly<Required<Omit<SearchConfig, 'llm'>>> = {
   maxContentLength: 5000,
   timeout: 10000,
   timeRange: '3m',
+  searchProvider: 'auto',
   userAgent: 'Mozilla/5.0 (compatible; N2-Mimir/1.0; +https://github.com/n2-project)',
 } as const;

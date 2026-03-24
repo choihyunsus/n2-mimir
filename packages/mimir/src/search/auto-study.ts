@@ -1,6 +1,6 @@
 // search/auto-study.ts — Auto Study orchestrator (full pipeline)
 
-import { search } from './engine.js';
+import { searchAuto } from './engine.js';
 import { crawlPages } from './crawler.js';
 import { extractClaims } from './extractor.js';
 import { verifyClaims } from './verifier.js';
@@ -41,7 +41,7 @@ const CATEGORY_MAP: readonly { keywords: readonly string[]; name: string }[] = [
  * Auto Study Pipeline — fully automated learning from web search.
  *
  * Pipeline:
- *   1. Search (DuckDuckGo HTML)
+ *   1. Search (Tavily or DuckDuckGo, auto-selected)
  *   2. Crawl (top N pages)
  *   3. Extract (claims from each page)
  *   4. Verify (5-source cross-validation)
@@ -67,8 +67,8 @@ export async function autoStudy(
     experiencesSaved: 0,
   };
 
-  // ── Step 1: Search ──
-  const searchResults = await search(topic, cfg);
+  // ── Step 1: Search (auto-dispatches between Tavily and DuckDuckGo) ──
+  const searchResults = await searchAuto(topic, cfg);
   result.searchResults = searchResults.length;
   if (searchResults.length === 0) return result;
 

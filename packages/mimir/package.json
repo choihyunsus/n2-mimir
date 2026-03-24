@@ -18,6 +18,9 @@
     "test": "vitest run",
     "clean": "rimraf dist"
   },
+  "optionalDependencies": {
+    "@tavily/core": "^0.0.7"
+  },
   "peerDependencies": {
     "better-sqlite3": ">=11.0.0"
   },
