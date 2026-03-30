@@ -50,6 +50,9 @@ export interface AutoStudyResult {
   experiencesSaved: number;
 }
 
+/** Search provider type */
+export type SearchProvider = 'duckduckgo' | 'tavily';
+
 /** Search configuration */
 export interface SearchConfig {
   readonly maxResults?: number;
@@ -59,6 +62,8 @@ export interface SearchConfig {
   readonly timeout?: number;
   readonly userAgent?: string;
   readonly timeRange?: string;
+  readonly provider?: SearchProvider;
+  readonly tavilyApiKey?: string;
   readonly llm?: {
     readonly provider: string;
     readonly model: string;
@@ -67,7 +72,7 @@ export interface SearchConfig {
 }
 
 /** Default search configuration */
-export const DEFAULT_CONFIG: Readonly<Required<Omit<SearchConfig, 'llm'>>> = {
+export const DEFAULT_CONFIG: Readonly<Required<Omit<SearchConfig, 'llm' | 'provider' | 'tavilyApiKey'>>> = {
   maxResults: 10,
   maxCrawlPages: 5,
   minConfidence: 0.6,

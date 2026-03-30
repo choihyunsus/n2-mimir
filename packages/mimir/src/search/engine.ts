@@ -1,4 +1,4 @@
-// search/engine.ts — DuckDuckGo HTML search engine (no API key, no external service)
+// search/engine.ts — Search engine with DuckDuckGo (default) and Tavily (optional) providers
 
 import { DEFAULT_CONFIG } from './types.js';
 import type { SearchResult, SearchConfig } from './types.js';
@@ -13,21 +13,70 @@ const CUSTOM_MONTH_RANGES: Readonly<Record<string, number>> = { '3m': 3, '6m': 6
 const DATE_RANGE_CASCADE = ['3m', '6m', 'y'] as const;
 
 /**
- * Search DuckDuckGo via HTML parsing.
- * Cascading date filter: tries narrow range first, expands if no results.
+ * Search the web using the configured provider.
+ * When provider='tavily' and tavilyApiKey is set, uses Tavily API.
+ * Otherwise falls back to DuckDuckGo HTML parsing with cascading date filters.
  */
 export async function search(
   query: string,
   config: SearchConfig = {},
 ): Promise<readonly SearchResult[]> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+
+  if (cfg.provider === 'tavily' && cfg.tavilyApiKey) {
+    return searchTavily(query, cfg);
+  }
+
+  return searchDuckDuckGo(query, cfg);
+}
+
+/**
+ * Search via Tavily API using @tavily/core.
+ */
+async function searchTavily(
+  query: string,
+  cfg: Record<string, unknown>,
+): Promise<readonly SearchResult[]> {
+  const { tavily } = await import('@tavily/core');
+  const client = tavily({ apiKey: cfg.tavilyApiKey as string });
+
+  const maxResults = (cfg.maxResults as number) ?? DEFAULT_CONFIG.maxResults;
+
+  const response = await client.search(query, {
+    maxResults,
+    searchDepth: 'basic',
+    topic: 'general',
+  });
+
+  return (response.results ?? []).slice(0, maxResults).map((r: { title?: string; url: string; content?: string }) => ({
+    title: r.title ?? '',
+    url: r.url,
+    snippet: r.content ?? '',
+  }));
+}
+
+/**
+ * Search DuckDuckGo via HTML parsing.
+ * Cascading date filter: tries narrow range first, expands if no results.
+ */
+function searchDuckDuckGo(
+  query: string,
+  cfg: Record<string, unknown>,
+): Promise<readonly SearchResult[]> {
+  return searchDuckDuckGoImpl(query, cfg);
+}
+
+async function searchDuckDuckGoImpl(
+  query: string,
+  cfg: Record<string, unknown>,
+): Promise<readonly SearchResult[]> {
   const encodedQuery = encodeURIComponent(query);
 
   // Build cascading date ranges: start from configured range, expand outward
   const startIdx = DATE_RANGE_CASCADE.indexOf(cfg.timeRange as typeof DATE_RANGE_CASCADE[number]);
   const cascade: readonly string[] = startIdx >= 0
     ? DATE_RANGE_CASCADE.slice(startIdx)
-    : [cfg.timeRange, ...DATE_RANGE_CASCADE];
+    : [cfg.timeRange as string, ...DATE_RANGE_CASCADE];
 
   for (const range of cascade) {
     const dateFilter = buildDateFilter(range);
@@ -35,18 +84,18 @@ export async function search(
 
     const response = await fetchWithTimeout(url, {
       headers: {
-        'User-Agent': cfg.userAgent,
+        'User-Agent': cfg.userAgent as string,
         'Accept': 'text/html',
         'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
       },
-    }, cfg.timeout);
+    }, cfg.timeout as number);
 
     if (!response.ok) {
       continue; // Silent failure — expand to next date range
     }
 
     const html = await response.text();
-    const results = parseSearchResults(html, cfg.maxResults);
+    const results = parseSearchResults(html, cfg.maxResults as number);
 
     if (results.length > 0) return results;
     // No results → expand to next range

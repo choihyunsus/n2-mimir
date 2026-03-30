@@ -11,5 +11,5 @@ export {
 export { DEFAULT_CONFIG } from './types.js';
 export type {
   SearchResult, CrawledPage, Claim, VerifiedFact,
-  VerificationStatus, AutoStudyResult, SearchConfig,
+  VerificationStatus, AutoStudyResult, SearchConfig, SearchProvider,
 } from './types.js';

@@ -68,7 +68,11 @@ export async function autoStudy(
   };
 
   // ── Step 1: Search ──
-  const searchResults = await search(topic, cfg);
+  // Auto-select Tavily when TAVILY_API_KEY is set and no provider is explicitly configured
+  const searchCfg: SearchConfig = (!cfg.provider && process.env.TAVILY_API_KEY)
+    ? { ...cfg, provider: 'tavily', tavilyApiKey: process.env.TAVILY_API_KEY }
+    : cfg;
+  const searchResults = await search(topic, searchCfg);
   result.searchResults = searchResults.length;
   if (searchResults.length === 0) return result;
 
