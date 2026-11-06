@@ -9,49 +9,30 @@ import { scoreInsight } from '../analyzer/weight.js';
  * This is what gets injected when a topic is mentioned.
  * Uses token budget to prevent context overflow.
  */
-export function generateOverlay(
-  insights: ReadonlyArray<Insight>,
-  tokenBudget = 500,
-  halfLife = 14,
-): string {
-  if (insights.length === 0) return '';
+export function generateOverlay(insights: ReadonlyArray<Insight>, tokenBudget = 500, halfLife = 14): string {
+  return buildOverlay(insights, tokenBudget, halfLife).text;
+}
 
-  // Score and sort by relevance
-  const scored = insights
-    .map((insight) => ({ insight, score: scoreInsight(insight, halfLife) }))
-    .sort((a, b) => b.score - a.score);
-
-  const lines: string[] = [];
-  let tokensUsed = 0;
-
-  // Header
-  const header = '⚡ Mímir Experience Overlay:';
-  tokensUsed += estimateTokens(header);
-  lines.push(header);
-
+export function buildOverlay(insights: ReadonlyArray<Insight>, tokenBudget: number, halfLife: number): { text: string; selectedIds: string[] } {
+  if (!Number.isFinite(tokenBudget) || tokenBudget < 0) throw new RangeError('tokenBudget must be finite and nonnegative');
+  const scored = insights.map(insight => ({ insight, score: scoreInsight(insight, halfLife) })).sort((a, b) => b.score - a.score);
+  const lines = ['⚡ Mímir Experience Overlay:'];
+  const selectedIds: string[] = [];
   for (const { insight } of scored) {
-    // Use compressed version (cheaper) if available, else full description
     const text = insight.compressed || insight.description;
-    const cost = estimateTokens(text) + 5; // 5 for bullet + newline
-
-    if (tokensUsed + cost > tokenBudget) break;
-
     const prefix = insight.status === 'graduated' ? '🔒' : insight.importance >= 4 ? '⚠️' : '💡';
-    lines.push(`${prefix} ${text}`);
-    tokensUsed += cost;
+    const line = `${prefix} ${text}`;
+    if (estimateTokens([...lines, line].join('\n')) > tokenBudget) continue;
+    lines.push(line);
+    selectedIds.push(insight.id);
   }
-
-  if (lines.length <= 1) return ''; // Only header, no insights fit budget
-
-  return lines.join('\n');
+  return { text: selectedIds.length ? lines.join('\n') : '', selectedIds };
 }
 
 /**
  * Generate question sequence prefix based on recall confidence (architecture.md §8-9).
  *
- * - none:      "⚡ 이 주제는 처음입니다. 사용자에게 구체적으로 질문하세요."
- * - ambiguous: "⚡ 과거 선호: X(3회), Y(1회). 확인 후 진행하세요."
- * - clear:     "⚡ 기본값: X. 바로 진행 가능."
+ * Describes the retrieved records so the host can compare them with the current request.
  */
 export function generateQuestionSequencePrefix(
   confidence: RecallConfidence,
@@ -60,22 +41,22 @@ export function generateQuestionSequencePrefix(
 ): string {
   switch (confidence) {
     case 'none':
-      return '⚡ 이 주제는 처음입니다. 사용자에게 구체적으로 질문하세요.';
+      return '⚡ 관련 과거 기록을 찾지 못했습니다.';
 
     case 'ambiguous': {
       if (!patternCounts || patternCounts.length === 0) {
-        return '⚡ 과거 경험이 있지만 패턴이 불명확합니다. 확인 후 진행하세요.';
+        return '⚡ 과거 기록에 여러 패턴이 있습니다. 현재 요청과 대조하세요.';
       }
       const summary = patternCounts
         .slice(0, 3) // top 3 only
         .map((p) => `${p.pattern.slice(0, 30)}(${p.count}회)`)
         .join(', ');
-      return `⚡ 과거 선호: ${summary}. 확인 후 진행하세요.`;
+      return `⚡ 과거 기록의 패턴: ${summary}. 현재 요청과 대조하세요.`;
     }
 
     case 'clear': {
       const pattern = dominantPattern?.slice(0, 50) ?? '확인됨';
-      return `⚡ 기본값: ${pattern}. 바로 진행 가능.`;
+      return `⚡ 과거 기록에서 많이 나타난 패턴: ${pattern}. 현재 요청과 대조하세요.`;
     }
   }
 }

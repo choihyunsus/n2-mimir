@@ -78,7 +78,7 @@ describe('recall', () => {
 
   it('should find experiences via FTS5', () => {
     db.insertExperience({
-      agent: 'rose', project: 'test', type: 'failure', category: 'coding',
+      agent: 'worker', project: 'test', type: 'failure', category: 'coding',
       context: 'PowerShell scripting', action: 'used && operator', outcome: 'syntax error',
     });
     const result = recall(db, 'PowerShell operator');
@@ -87,10 +87,10 @@ describe('recall', () => {
 
   it('should find experiences by project filter', () => {
     db.insertExperience({
-      agent: 'rose', project: 'n2-browser', type: 'success', category: 'coding',
+      agent: 'worker', project: 'demo-project', type: 'success', category: 'coding',
       context: 'test', action: 'test action here', outcome: 'test outcome here',
     });
-    const result = recall(db, 'test', 'n2-browser');
+    const result = recall(db, 'test', 'demo-project');
     expect(result.experiences.length).toBeGreaterThanOrEqual(1);
   });
 

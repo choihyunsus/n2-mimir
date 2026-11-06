@@ -46,9 +46,12 @@ export interface ExperienceInput {
 }
 
 /** Experience query filter */
-export interface ExperienceFilter {
+export interface MemoryScope {
   readonly project?: string;
   readonly agent?: string;
+}
+
+export interface ExperienceFilter extends MemoryScope {
   readonly category?: string;
   readonly type?: ExperienceType;
   readonly severity?: Severity;
@@ -85,6 +88,8 @@ export interface Insight {
 
 /** Insight input for creation */
 export interface InsightInput {
+  readonly project?: string;
+  readonly sourceIds?: ReadonlyArray<string>;
   readonly agent: string;
   readonly description: string;
   readonly compressed: string;
@@ -95,6 +100,8 @@ export interface InsightInput {
 
 /** Insight query filter */
 export interface InsightFilter {
+  readonly id?: string;
+  readonly project?: string;
   readonly agent?: string;
   readonly category?: string;
   readonly scope?: InsightScope;
@@ -130,7 +137,7 @@ export interface ContrastPair {
 /** Insight operation from analysis */
 export type InsightOperation =
   | { readonly op: 'ADD'; readonly insight: InsightInput }
-  | { readonly op: 'UPVOTE'; readonly insightId: string }
+  | { readonly op: 'UPVOTE'; readonly insightId: string; readonly sourceIds?: ReadonlyArray<string> }
   | { readonly op: 'DOWNVOTE'; readonly insightId: string };
 
 /** Repeated failure pattern */
@@ -176,6 +183,7 @@ export interface ScoredInsight {
 
 /** Raw experience before normalization */
 export interface RawExperience {
+  readonly sessionId?: string;
   readonly action: string;
   readonly outcome: string;
   readonly context?: string;
@@ -215,6 +223,8 @@ export interface LlmConfig {
   readonly provider: 'ollama' | 'openai' | 'anthropic';
   readonly model: string;
   readonly endpoint?: string;
+  readonly apiKey?: string;
+  readonly timeoutMs?: number;
 }
 
 /** Mímir config — standalone mode */
@@ -231,4 +241,6 @@ export interface MimirConfig {
 export interface ExperienceAdapter {
   /** Collect raw experiences from the data source */
   collect(project: string, agent: string): Promise<ReadonlyArray<RawExperience>>;
+  /** Acknowledge observations only after storage succeeds. Collect must be retryable. */
+  acknowledge?(experiences: ReadonlyArray<RawExperience>): void | Promise<void>;
 }

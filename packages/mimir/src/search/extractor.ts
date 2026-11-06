@@ -44,6 +44,7 @@ const STOP_WORDS = new Set([
 
 /** Max claims extracted per page */
 const MAX_CLAIMS_PER_PAGE = 15;
+const MIN_SENTENCE_LENGTH = 20;
 
 /**
  * Extract key claims/facts from crawled page content.
@@ -84,12 +85,12 @@ export function splitSentences(text: string): string[] {
 
   return raw
     .map((s) => s.trim())
-    .filter((s) => s.length >= 20 && s.length <= 500);
+    .filter((s) => s.length >= MIN_SENTENCE_LENGTH && s.length <= 500);
 }
 
 /** Check if a sentence is a valid claim (not noise/navigation text) */
 export function isValidClaim(sentence: string): boolean {
-  if (sentence.length < 20 || sentence.length > 500) return false;
+  if (sentence.length < MIN_SENTENCE_LENGTH || sentence.length > 500) return false;
 
   // Reject navigation/UI text
   for (const pattern of NOISE_PATTERNS) {

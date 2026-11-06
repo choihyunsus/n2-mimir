@@ -12,7 +12,7 @@ const TEST_DB = './test-insight.db';
 function makeExp(overrides: Partial<ExperienceEntry>): ExperienceEntry {
   return {
     id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(),
-    sessionId: 's1', agent: 'rose', project: 'test', type: 'success',
+    sessionId: 's1', agent: 'worker', project: 'test', type: 'success',
     category: 'coding', severity: 'info', context: 'ctx', action: 'act',
     outcome: 'out', frequency: 1, tokenCost: 10, createdAt: new Date().toISOString(),
     ...overrides,
@@ -84,9 +84,9 @@ describe('insight', () => {
   });
 
   describe('voting — deduplicateOperations', () => {
-    it('should convert ADD to UPVOTE for similar existing insight', () => {
+    it('should convert ADD to UPVOTE for an exact existing insight', () => {
       db.insertInsight({ agent: 'a', description: 'use semicolon instead of ampersand', compressed: 'c', category: 'coding' });
-      const ops = [{ op: 'ADD' as const, insight: { agent: 'a', description: 'use semicolon instead of double ampersand', compressed: 'c', category: 'coding' } }];
+      const ops = [{ op: 'ADD' as const, insight: { agent: 'a', description: 'use semicolon instead of ampersand', compressed: 'c', category: 'coding' } }];
       const deduped = deduplicateOperations(db, ops);
       expect(deduped[0].op).toBe('UPVOTE');
     });

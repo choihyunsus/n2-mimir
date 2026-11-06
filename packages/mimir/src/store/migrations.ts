@@ -8,6 +8,8 @@ import { SCHEMA_VERSION } from './schema.js';
  * SQL runs inside a transaction for atomicity.
  */
 const MIGRATIONS: Record<number, ReadonlyArray<string>> = {
+  // Version 2 adds link/similarity tables through the additive bootstrap schema.
+  2: [],
   // v1 is the initial schema (created by SCHEMA_SQL in schema.ts)
   // Future migrations go here:
   // 2: [
@@ -18,15 +20,15 @@ const MIGRATIONS: Record<number, ReadonlyArray<string>> = {
 
 /** Read current schema version from database meta table */
 function getCurrentVersion(db: BetterSqlite3.Database): number {
-  try {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get()) {
     const row = db.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'"
     ).get() as { value: string } | undefined;
-    return row ? parseInt(row.value, 10) : 0;
-  } catch {
-    // meta table doesn't exist yet → version 0
-    return 0;
+    if (!row) return 0;
+    if (!/^\d+$/.test(row.value)) throw new Error('Invalid Mimir schema version');
+    return Number(row.value);
   }
+  return 0;
 }
 
 /** Update schema version in meta table */
@@ -44,13 +46,15 @@ function setVersion(db: BetterSqlite3.Database, version: number): void {
  */
 export function runMigrations(db: BetterSqlite3.Database): number {
   const current = getCurrentVersion(db);
+  if (current > SCHEMA_VERSION) throw new Error('Database schema is newer than this Mimir version');
   if (current >= SCHEMA_VERSION) return 0;
 
   let applied = 0;
 
   for (let v = current + 1; v <= SCHEMA_VERSION; v++) {
     const sqls = MIGRATIONS[v];
-    if (!sqls || sqls.length === 0) continue;
+    if (v === 1) continue;
+    if (!sqls) throw new Error(`Missing migration for schema version ${v}`);
 
     db.transaction(() => {
       for (const sql of sqls) {

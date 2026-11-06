@@ -1,18 +1,23 @@
 {
   "name": "n2-mimir-monorepo",
-  "version": "0.1.0",
+  "version": "3.0.0",
   "private": true,
   "description": "n2-Mímir — AI Experience Learning Engine",
   "workspaces": [
     "packages/mimir"
   ],
   "scripts": {
-    "build:rust": "npm prefix -c \"cd packages/core && cargo build --release\"",
-    "test:rust": "npm prefix -c \"cd packages/core && cargo test\"",
-    "build:ts": "npm prefix -c \"cd packages/mimir && npm run build\"",
-    "test:ts": "npm prefix -c \"cd packages/mimir && npm run test\"",
-    "build": "npm run build:rust && npm run build:ts",
-    "test": "npm run test:rust && npm run test:ts"
+    "build": "npm run build --workspace=packages/mimir",
+    "build:ts": "npm run build --workspace=packages/mimir",
+    "build:native": "node scripts/build-native.cjs",
+    "build:rust": "npm run build:native",
+    "typecheck": "npm run typecheck --workspace=packages/mimir",
+    "test:ts": "npm test --workspace=packages/mimir",
+    "test:rust": "cargo +1.98.0 test --locked --manifest-path packages/core/Cargo.toml --jobs 2",
+    "test": "npm run typecheck && npm run test:ts"
   },
-  "license": "Apache-2.0"
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22.18.0"
+  }
 }

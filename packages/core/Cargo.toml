@@ -1,8 +1,9 @@
 # n2-mimir-core — Rust core engine for n2-Mímir experience system
 [package]
 name = "n2-mimir-core"
-version = "0.1.0"
+version = "3.0.0"
 edition = "2021"
+rust-version = "1.98"
 description = "High-performance experience engine core: SQLite, FTS5, SIMD vector ops"
 license = "MIT"
 authors = ["N2 Project"]

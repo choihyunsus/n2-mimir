@@ -3,9 +3,9 @@ import type { RawExperience, ExperienceInput, ExperienceType, Severity } from '.
 
 /** Signal keywords that indicate meaningful experiences */
 const SIGNAL_KEYWORDS = {
-  failure: ['error', 'fail', 'crash', 'bug', 'broken', 'wrong', '실패', '에러', '오류', '버그'],
-  correction: ['fix', 'correct', 'change', 'should', 'instead', '수정', '교정', '변경', '대신'],
-  success: ['success', 'complete', 'done', 'work', 'pass', '성공', '완료', '통과'],
+  failure: ['error', 'errors', 'fail', 'failed', 'failure', 'crash', 'crashed', 'bug', 'broken', 'wrong', '실패', '에러', '오류', '버그'],
+  correction: ['fix', 'fixed', 'correct', 'corrected', 'change', 'changed', 'should', 'instead', '수정', '교정', '변경', '대신'],
+  success: ['success', 'successful', 'complete', 'completed', 'done', 'work', 'worked', 'pass', 'passed', '성공', '완료', '통과'],
   pattern: ['always', 'every time', 'pattern', 'repeat', '항상', '매번', '반복', '패턴'],
 } as const;
 
@@ -16,10 +16,11 @@ function detectType(raw: RawExperience): ExperienceType {
   const text = `${raw.action} ${raw.outcome} ${raw.context ?? ''}`.toLowerCase();
 
   if (raw.correction) return 'correction';
-  if (SIGNAL_KEYWORDS.correction.some((k) => text.includes(k))) return 'correction';
-  if (SIGNAL_KEYWORDS.failure.some((k) => text.includes(k))) return 'failure';
-  if (SIGNAL_KEYWORDS.pattern.some((k) => text.includes(k))) return 'pattern';
-  if (SIGNAL_KEYWORDS.success.some((k) => text.includes(k))) return 'success';
+  if (/\b(?:not|never)\s+(?:work\w*|pass\w*|succeed\w*|successful|complete\w*)\b/.test(text)) return 'failure';
+  if (SIGNAL_KEYWORDS.correction.some((k) => containsSignal(text, k))) return 'correction';
+  if (SIGNAL_KEYWORDS.failure.some((k) => containsSignal(text, k))) return 'failure';
+  if (SIGNAL_KEYWORDS.pattern.some((k) => containsSignal(text, k))) return 'pattern';
+  if (SIGNAL_KEYWORDS.success.some((k) => containsSignal(text, k))) return 'success';
 
   return 'pattern';
 }
@@ -74,7 +75,7 @@ export function hasSignal(raw: RawExperience): boolean {
 
   // Keywords first — if signal keyword exists, always valid
   const allKeywords = Object.values(SIGNAL_KEYWORDS).flat();
-  const matchCount = allKeywords.filter((k) => lowerText.includes(k)).length;
+  const matchCount = allKeywords.filter((k) => containsSignal(lowerText, k)).length;
   if (matchCount > 0) return true;
 
   // No keywords — require minimum length for noise filtering
@@ -83,7 +84,7 @@ export function hasSignal(raw: RawExperience): boolean {
 
 /** Normalize raw experience into validated ExperienceInput */
 export function normalize(raw: RawExperience): ExperienceInput | null {
-  if (!raw.action || !raw.outcome) return null;
+  if (!isRawExperience(raw)) return null;
   if (!hasSignal(raw)) return null;
 
   return {
@@ -97,11 +98,26 @@ export function normalize(raw: RawExperience): ExperienceInput | null {
     outcome: raw.outcome,
     correction: raw.correction,
     sourceRef: raw.sourceRef,
-    sessionId: raw.timestamp ?? new Date().toISOString(),
+    sessionId: raw.sessionId ?? raw.timestamp ?? '',
   };
 }
 
 // === Type guards ===
+
+function containsSignal(text: string, signal: string): boolean {
+  return /^[a-z]/.test(signal) ? new RegExp(`\\b${signal}\\b`, 'i').test(text) : text.includes(signal);
+}
+
+export function isRawExperience(value: unknown): value is RawExperience {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.action !== 'string' || !raw.action.trim() ||
+      typeof raw.outcome !== 'string' || !raw.outcome.trim()) return false;
+  const optionalFields = ['agent', 'project', 'context', 'type', 'category', 'severity',
+    'correction', 'sourceRef', 'sessionId', 'timestamp'];
+  if (optionalFields.some(key => raw[key] !== undefined && typeof raw[key] !== 'string')) return false;
+  return ['agent', 'project'].every(key => raw[key] === undefined || (raw[key] as string).trim().length > 0);
+}
 
 function isValidType(s: string): s is ExperienceType {
   return ['success', 'failure', 'correction', 'pattern'].includes(s);

@@ -1,6 +1,6 @@
 // Insight store — insight lifecycle management
 import type { MimirDatabase } from '../store/database.js';
-import type { Insight, InsightFilter } from '../types.js';
+import type { Insight, InsightFilter, MemoryScope } from '../types.js';
 
 /** Graduation threshold */
 const GRADUATION_IMPORTANCE = 5;
@@ -11,8 +11,9 @@ const GRADUATION_EFFECT_SCORE = 0.8;
  * Graduated insights have been repeatedly validated and should be
  * converted to enforced rules (Ark/Clotho).
  */
-export function checkGraduation(db: MimirDatabase): Insight[] {
+export function checkGraduation(db: MimirDatabase, scope: MemoryScope = {}): Insight[] {
   const candidates = db.queryInsights({
+    ...scope,
     status: 'active',
     minImportance: GRADUATION_IMPORTANCE,
   });
@@ -20,7 +21,7 @@ export function checkGraduation(db: MimirDatabase): Insight[] {
   const graduated: Insight[] = [];
 
   for (const insight of candidates) {
-    if (insight.effectScore >= GRADUATION_EFFECT_SCORE) {
+    if (insight.effectScore >= GRADUATION_EFFECT_SCORE && db.reasoning.latestConclusion(insight.id)?.isVerified !== false) {
       graduated.push(insight);
     }
   }
@@ -43,8 +44,8 @@ export function getGraduatedInsights(db: MimirDatabase): Insight[] {
  * Note: downvoteInsight() SQL already sets status='retired' when importance <= 1.
  * This function handles any inconsistent state (e.g. importance=0 but still 'active').
  */
-export function retireDormantInsights(db: MimirDatabase): number {
-  const candidates = db.queryInsights({ status: 'active', limit: 100 });
+export function retireDormantInsights(db: MimirDatabase, scope: MemoryScope = {}): number {
+  const candidates = db.queryInsights({ ...scope, status: 'active', limit: 100 });
   let retired = 0;
 
   for (const insight of candidates) {

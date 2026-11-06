@@ -1,11 +1,13 @@
 // migration.rs — Schema migration runner (versioned evolution)
 
-use rusqlite::Connection;
-use crate::schema::SCHEMA_VERSION;
+use crate::schema::{SCHEMA_SQL, SCHEMA_VERSION};
+use rusqlite::{Connection, OptionalExtension};
 
 /// Migration definitions: target_version → SQL statements
 fn get_migrations() -> Vec<(u32, Vec<&'static str>)> {
     vec![
+        // Version 2 tables and indexes are created by the additive bootstrap schema.
+        (2, vec![]),
         // v1 is the initial schema (created by SCHEMA_SQL)
         // Future migrations:
         // (2, vec![
@@ -16,16 +18,18 @@ fn get_migrations() -> Vec<(u32, Vec<&'static str>)> {
 }
 
 /// Read current schema version from meta table
-fn get_current_version(conn: &Connection) -> u32 {
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = 'schema_version'",
-        [],
-        |row| {
-            let val: String = row.get(0)?;
-            Ok(val.parse::<u32>().unwrap_or(0))
-        },
-    )
-    .unwrap_or(0)
+fn get_current_version(conn: &Connection) -> Result<u32, Box<dyn std::error::Error>> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match value {
+        Some(value) => Ok(value.parse()?),
+        None => Ok(0),
+    }
 }
 
 /// Update schema version in meta table
@@ -38,40 +42,33 @@ fn set_version(conn: &Connection, version: u32) -> rusqlite::Result<()> {
 }
 
 /// Run all pending migrations from current version to SCHEMA_VERSION.
-/// Each migration runs atomically in a savepoint.
+/// Schema initialization and pending migrations commit together.
 ///
 /// Returns number of migrations applied.
-pub fn run_migrations(conn: &mut Connection) -> rusqlite::Result<u32> {
-    let current = get_current_version(conn);
-    if current >= SCHEMA_VERSION {
-        return Ok(0);
+pub fn run_migrations(conn: &mut Connection) -> Result<u32, Box<dyn std::error::Error>> {
+    let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_SQL)?;
+    let current = get_current_version(&transaction)?;
+    if current > SCHEMA_VERSION {
+        return Err("Database schema is newer than this Mimir version".into());
     }
-
     let migrations = get_migrations();
-    let mut applied = 0u32;
-
-    for (target_version, sqls) in &migrations {
-        if *target_version <= current {
+    let mut applied = 0;
+    for version in (current + 1)..=SCHEMA_VERSION {
+        if version == 1 {
             continue;
         }
-        if *target_version > SCHEMA_VERSION {
-            break;
+        let (_, statements) = migrations
+            .iter()
+            .find(|(target, _)| *target == version)
+            .ok_or("Missing database migration")?;
+        for statement in statements {
+            transaction.execute_batch(statement)?;
         }
-
-        let sp = conn.savepoint()?;
-        for sql in sqls {
-            sp.execute_batch(sql)?;
-        }
-        set_version(&sp, *target_version)?;
-        sp.commit()?;
         applied += 1;
     }
-
-    // Ensure version is current even if no migrations needed
-    if applied == 0 {
-        set_version(conn, SCHEMA_VERSION)?;
-    }
-
+    set_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit()?;
     Ok(applied)
 }
 
@@ -86,8 +83,8 @@ mod tests {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
             .unwrap();
 
-        assert_eq!(get_current_version(&conn), 0);
+        assert_eq!(get_current_version(&conn).unwrap(), 0);
         set_version(&conn, 1).unwrap();
-        assert_eq!(get_current_version(&conn), 1);
+        assert_eq!(get_current_version(&conn).unwrap(), 1);
     }
 }

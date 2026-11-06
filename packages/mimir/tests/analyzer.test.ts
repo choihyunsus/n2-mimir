@@ -10,7 +10,7 @@ function makeExp(overrides: Partial<ExperienceEntry>): ExperienceEntry {
     id: Math.random().toString(36).slice(2),
     timestamp: new Date().toISOString(),
     sessionId: 's1',
-    agent: 'rose',
+    agent: 'worker',
     project: 'test',
     type: 'success',
     category: 'coding_pattern',

@@ -16,15 +16,26 @@ use chrono::{DateTime, Utc};
 /// Graduated insights should bypass this (weight = 1.0 always).
 pub fn time_decay(created_at: &str, half_life_days: f64) -> f64 {
     let now = Utc::now();
-    let created = match DateTime::parse_from_rfc3339(created_at) {
-        Ok(dt) => dt.with_timezone(&Utc),
-        Err(_) => {
-            // Fallback: try parsing as naive datetime
-            match chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S") {
-                Ok(naive) => naive.and_utc(),
-                Err(_) => return 1.0, // Can't parse → no decay
-            }
-        }
+    let parsed = DateTime::parse_from_rfc3339(created_at)
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S%.f")
+                .map(|value| value.and_utc())
+        })
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|value| value.and_utc())
+        })
+        .or_else(|_| {
+            chrono::NaiveDate::parse_from_str(created_at, "%Y-%m-%d").map(|value| {
+                value
+                    .and_hms_opt(0, 0, 0)
+                    .expect("valid midnight")
+                    .and_utc()
+            })
+        });
+    let Ok(created) = parsed else {
+        return 0.0;
     };
 
     let age_days = (now - created).num_seconds() as f64 / 86400.0;
@@ -76,6 +87,9 @@ pub fn batch_compute_json(
     timestamps_json: &str,
     half_life_days: f64,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    if !half_life_days.is_finite() || half_life_days <= 0.0 {
+        return Err("Half life must be positive and finite".into());
+    }
     let timestamps: Vec<String> = serde_json::from_str(timestamps_json)?;
     let weights: Vec<f64> = timestamps
         .iter()
@@ -87,25 +101,26 @@ pub fn batch_compute_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TEST_HALF_LIFE: f64 = 30.0;
 
     #[test]
     fn test_recent_has_high_weight() {
         let now = Utc::now().to_rfc3339();
-        let weight = time_decay(&now, 30.0);
+        let weight = time_decay(&now, TEST_HALF_LIFE);
         assert!((weight - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn test_30_days_old_is_half() {
         let thirty_days_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-        let weight = time_decay(&thirty_days_ago, 30.0);
+        let weight = time_decay(&thirty_days_ago, TEST_HALF_LIFE);
         assert!((weight - 0.5).abs() < 0.01);
     }
 
     #[test]
     fn test_60_days_old_is_quarter() {
         let sixty_days_ago = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
-        let weight = time_decay(&sixty_days_ago, 30.0);
+        let weight = time_decay(&sixty_days_ago, TEST_HALF_LIFE);
         assert!((weight - 0.25).abs() < 0.01);
     }
 
@@ -130,7 +145,7 @@ mod tests {
     #[test]
     fn test_combined_weight_critical() {
         let now = Utc::now().to_rfc3339();
-        let weight = combined_weight(&now, 2, "critical", 30.0);
+        let weight = combined_weight(&now, 2, "critical", TEST_HALF_LIFE);
         // time_decay ≈ 1.0, reinforcement = 1.0, severity = 4.0
         assert!((weight - 4.0).abs() < 0.1);
     }
@@ -139,7 +154,7 @@ mod tests {
     fn test_batch_compute() {
         let now = Utc::now().to_rfc3339();
         let json = format!("[\"{}\"]", now);
-        let result = batch_compute_json(&json, 30.0).unwrap();
+        let result = batch_compute_json(&json, TEST_HALF_LIFE).unwrap();
         let weights: Vec<f64> = serde_json::from_str(&result).unwrap();
         assert_eq!(weights.len(), 1);
         assert!((weights[0] - 1.0).abs() < 0.01);

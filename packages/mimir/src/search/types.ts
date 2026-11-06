@@ -28,7 +28,7 @@ export interface Claim {
 /** Verification status for cross-validated facts */
 export type VerificationStatus = 'verified' | 'pending' | 'unverified' | 'flagged';
 
-/** Verified fact after 5-source cross-validation */
+/** Claim with heuristic source-agreement evidence. Verification is a review signal. */
 export interface VerifiedFact {
   readonly claim: string;
   readonly confidence: number;
@@ -52,6 +52,8 @@ export interface AutoStudyResult {
 
 /** Search configuration */
 export interface SearchConfig {
+  readonly project?: string;
+  readonly agent?: string;
   readonly maxResults?: number;
   readonly maxCrawlPages?: number;
   readonly minConfidence?: number;
@@ -67,12 +69,31 @@ export interface SearchConfig {
 }
 
 /** Default search configuration */
-export const DEFAULT_CONFIG: Readonly<Required<Omit<SearchConfig, 'llm'>>> = {
+export const DEFAULT_CONFIG: Readonly<Required<Omit<SearchConfig, 'llm' | 'project' | 'agent'>>> = {
   maxResults: 10,
   maxCrawlPages: 5,
   minConfidence: 0.6,
   maxContentLength: 5000,
   timeout: 10000,
   timeRange: '3m',
-  userAgent: 'Mozilla/5.0 (compatible; N2-Mimir/1.0; +https://github.com/n2-project)',
+  userAgent: 'N2-Mimir/3.0 (+https://github.com/choihyunsus/n2-mimir)',
 } as const;
+
+export function resolveSearchConfig(config: SearchConfig) {
+  const resolved = { ...DEFAULT_CONFIG, ...config };
+  const limits = { maxResults: 50, maxCrawlPages: 20, maxContentLength: 100000, timeout: 60000 };
+  for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+    if (!Number.isInteger(resolved[key]) || resolved[key] < 1 || resolved[key] > limits[key]) {
+      throw new Error(`Invalid search option ${key}`);
+    }
+  }
+  if (!Number.isFinite(resolved.minConfidence) || resolved.minConfidence < 0 || resolved.minConfidence > 1) {
+    throw new Error('Invalid search confidence threshold');
+  }
+  for (const key of ['project', 'agent'] as const) {
+    if (resolved[key] !== undefined && (typeof resolved[key] !== 'string' || !resolved[key]!.trim())) {
+      throw new Error(`Invalid search scope ${key}`);
+    }
+  }
+  return resolved;
+}

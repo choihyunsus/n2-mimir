@@ -44,6 +44,7 @@ pub fn cosine_similarity_json(
 
 /// Batch cosine similarity: one query vector vs multiple candidate vectors.
 /// Returns Vec of (index, similarity) sorted by similarity descending.
+#[cfg(test)]
 pub fn batch_cosine_similarity(query: &[f32], candidates: &[Vec<f32>]) -> Vec<(usize, f64)> {
     let mut results: Vec<(usize, f64)> = candidates
         .iter()
@@ -101,9 +102,9 @@ mod tests {
     fn test_batch_similarity() {
         let query = vec![1.0f32, 0.0, 0.0];
         let candidates = vec![
-            vec![0.0f32, 1.0, 0.0],  // orthogonal
-            vec![1.0f32, 0.0, 0.0],  // identical
-            vec![0.5f32, 0.5, 0.0],  // partial
+            vec![0.0f32, 1.0, 0.0], // orthogonal
+            vec![1.0f32, 0.0, 0.0], // identical
+            vec![0.5f32, 0.5, 0.0], // partial
         ];
         let results = batch_cosine_similarity(&query, &candidates);
         assert_eq!(results[0].0, 1); // identical is first

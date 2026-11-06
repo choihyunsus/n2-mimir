@@ -2,11 +2,16 @@
 // Converts Soul Ledger entries (immutable JSON) into ExperienceEntry format
 
 import type { ExperienceAdapter, RawExperience } from '../../types.js';
-import { readdir, readFile } from 'fs/promises';
-import { join } from 'path';
+import { readdir, readFile, realpath, stat } from 'fs/promises';
+import { join, resolve, relative, isAbsolute } from 'path';
 
 /** Ledger entry structure (from Soul's ledger JSON files) */
 interface LedgerEntry {
+  readonly project?: string;
+  readonly id?: string;
+  readonly operationId?: string;
+  readonly startedAt?: string;
+  readonly completedAt?: string;
   readonly title?: string;
   readonly summary?: string;
   readonly agent?: string;
@@ -37,99 +42,65 @@ export class LedgerAdapter implements ExperienceAdapter {
   }
 
   async collect(project: string, agent: string): Promise<ReadonlyArray<RawExperience>> {
-    const ledgerPath = join(this.soulDataPath, 'projects', project, 'ledger');
-    const experiences: RawExperience[] = [];
-
-    try {
-      const entries = await this.readAllLedgerEntries(ledgerPath);
-
-      for (const entry of entries) {
-        // Filter by agent if specified in ledger entry
-        if (agent && entry.agent && entry.agent !== agent) {
-          continue;
-        }
-
-        // Convert decisions to correction-type experiences
-        if (entry.decisions) {
-          for (const decision of entry.decisions) {
-            experiences.push({
-              action: decision,
-              outcome: 'Decision recorded in ledger',
-              context: entry.title ?? entry.summary ?? 'Work session',
-              type: 'pattern',
-              category: this.classifyDecision(decision),
-              severity: 'info',
-              agent: entry.agent ?? agent,
-              project,
-              timestamp: entry.timestamp,
-              sourceRef: `ledger/${project}`,
-            });
-          }
-        }
-
-        // Convert insights to pattern experiences
-        if (entry.insights) {
-          for (const insight of entry.insights) {
-            experiences.push({
-              action: insight,
-              outcome: 'Insight extracted from work session',
-              context: entry.title ?? entry.summary ?? 'Work session',
-              type: 'pattern',
-              category: this.classifyInsight(insight),
-              severity: 'info',
-              agent: entry.agent ?? agent,
-              project,
-              timestamp: entry.timestamp,
-              sourceRef: `ledger/${project}`,
-            });
-          }
-        }
-
-        // Convert summary to a session experience
-        if (entry.summary) {
-          experiences.push({
-            action: entry.summary,
-            outcome: entry.title ?? 'Work completed',
-            context: `Session by ${entry.agent ?? agent}`,
-            type: 'success',
-            category: 'workflow',
-            severity: 'info',
-            agent: entry.agent ?? agent,
-            project,
-            timestamp: entry.timestamp,
-            sourceRef: `ledger/${project}`,
-          });
-        }
-      }
-    } catch {
-      // Ledger directory might not exist — that's OK
+    if (!project || ['__proto__', 'prototype', 'constructor'].includes(project) || project.trim() !== project || project === '.' || project === '..' || /[\\/:<>"|?*\x00-\x1f]/.test(project)
+      || /[. ]$/.test(project) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(project)) {
+      throw new Error('Invalid Soul project path segment');
     }
-
-    return experiences;
+    let root: string;
+    try { root = await realpath(this.soulDataPath); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+    const expected = resolve(root, 'projects', project, 'ledger');
+    let ledger: string;
+    try { ledger = await realpath(expected); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+    if (relative(expected, ledger) !== '') throw new Error('Ledger path resolves outside its project');
+    const entries = await this.readAllLedgerEntries(ledger);
+    return entries.flatMap(({ entry, file }) => {
+      if (entry.agent !== agent || (entry.project !== undefined && entry.project !== project)) return [];
+      return this.convertEntry(entry, `ledger/${project}/${file}`, project, agent);
+    });
   }
 
-  /** Read all ledger JSON files recursively */
-  private async readAllLedgerEntries(basePath: string): Promise<LedgerEntry[]> {
-    const entries: LedgerEntry[] = [];
-
-    try {
-      const items = await readdir(basePath, { withFileTypes: true, recursive: true });
-      for (const item of items) {
-        if (item.isFile() && item.name.endsWith('.json')) {
-          try {
-            const fullPath = join(item.parentPath ?? basePath, item.name);
-            const content = await readFile(fullPath, 'utf-8');
-            const entry = JSON.parse(content) as LedgerEntry;
-            entries.push(entry);
-          } catch {
-            // Skip malformed entries
-          }
-        }
-      }
-    } catch {
-      // Directory doesn't exist
+  private convertEntry(entry: LedgerEntry, sourceRef: string, project: string, agent: string): RawExperience[] {
+    const base = { context: entry.title ?? entry.summary ?? 'Work session', agent, project,
+      timestamp: entry.completedAt ?? entry.timestamp ?? entry.startedAt,
+      sessionId: entry.operationId ?? entry.id ?? sourceRef, severity: 'info' };
+    const records: RawExperience[] = [];
+    for (const [kind, items] of [['decision', entry.decisions], ['insight', entry.insights]] as const) {
+      if (!Array.isArray(items)) continue;
+      items.forEach((value, index) => {
+        if (typeof value === 'string' && value.trim()) records.push({ ...base, action: value,
+          outcome: `${kind} recorded in work ledger`, type: 'pattern', category: this.classifyDecision(value),
+          sourceRef: `${sourceRef}#${kind}:${index}` });
+      });
     }
+    if (typeof entry.summary === 'string' && entry.summary.trim()) records.push({ ...base,
+      action: entry.summary, outcome: 'Work session recorded', type: 'pattern', category: 'workflow',
+      sourceRef: `${sourceRef}#summary` });
+    return records;
+  }
 
+  private async readAllLedgerEntries(base: string): Promise<Array<{ entry: LedgerEntry; file: string }>> {
+    const entries: Array<{ entry: LedgerEntry; file: string }> = [];
+    const items = await readdir(base, { withFileTypes: true, recursive: true });
+    const files = items.filter(item => item.isFile() && item.name.endsWith('.json'));
+    if (files.length > 10000) throw new Error('Ledger collection exceeds 10000 files');
+    for (const item of files) {
+      const file = join(item.parentPath ?? base, item.name);
+      const actual = await realpath(file);
+      const rel = relative(base, actual);
+      if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) throw new Error('Ledger file escapes project');
+      if ((await stat(actual)).size > 1024 * 1024) throw new Error('Ledger entry exceeds 1 MiB');
+      const text = await readFile(actual, 'utf8');
+      try {
+        const entry: unknown = JSON.parse(text);
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const record = entry as Record<string, unknown>;
+        const textFields = ['agent', 'project', 'id', 'operationId', 'title', 'summary', 'timestamp', 'startedAt', 'completedAt'];
+        if (textFields.some(key => record[key] !== undefined && typeof record[key] !== 'string')) continue;
+        entries.push({ entry: entry as LedgerEntry, file: rel.replaceAll('\\', '/') });
+      } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+    }
     return entries;
   }
 
@@ -144,8 +115,4 @@ export class LedgerAdapter implements ExperienceAdapter {
     return 'workflow';
   }
 
-  /** Simple keyword-based insight classification */
-  private classifyInsight(insight: string): string {
-    return this.classifyDecision(insight);
-  }
 }

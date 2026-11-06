@@ -1,7 +1,8 @@
 // search/engine.ts — DuckDuckGo HTML search engine (no API key, no external service)
 
-import { DEFAULT_CONFIG } from './types.js';
+import { resolveSearchConfig } from './types.js';
 import type { SearchResult, SearchConfig } from './types.js';
+import { httpUrl, readResponseText } from '../http.js';
 
 /** Native DuckDuckGo date filter values */
 const NATIVE_DATE_FILTERS = new Set(['d', 'w', 'm', 'y']);
@@ -20,7 +21,8 @@ export async function search(
   query: string,
   config: SearchConfig = {},
 ): Promise<readonly SearchResult[]> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const cfg = resolveSearchConfig(config);
+  if (typeof query !== 'string' || !query.trim() || query.length > 2000) throw new Error('Invalid search query');
   const encodedQuery = encodeURIComponent(query);
 
   // Build cascading date ranges: start from configured range, expand outward
@@ -42,10 +44,11 @@ export async function search(
     }, cfg.timeout);
 
     if (!response.ok) {
+      await response.body?.cancel();
       continue; // Silent failure — expand to next date range
     }
 
-    const html = await response.text();
+    const html = await readResponseText(response);
     const results = parseSearchResults(html, cfg.maxResults);
 
     if (results.length > 0) return results;
@@ -103,7 +106,10 @@ export function parseSearchResults(html: string, maxResults: number): SearchResu
 
     let url = urlMatch[1];
     url = extractActualUrl(url);
-    if (!url || url.includes('duckduckgo.com')) continue;
+    try {
+      const parsed = httpUrl(url);
+      if (parsed.hostname === 'duckduckgo.com' || parsed.hostname.endsWith('.duckduckgo.com')) continue;
+    } catch { continue; }
 
     // Extract title text
     const titleMatch = block.match(/class="result__a"[^>]*>([^<]+)</);
@@ -138,7 +144,7 @@ export function extractActualUrl(ddgUrl: string): string {
   // Extract from DDG redirect: ?uddg=<encoded url>
   const uddgMatch = ddgUrl.match(/[?&]uddg=([^&]+)/);
   if (uddgMatch) {
-    return decodeURIComponent(uddgMatch[1]);
+    try { return decodeURIComponent(uddgMatch[1]); } catch { return ''; }
   }
 
   // Fallback: protocol-relative URL
@@ -174,16 +180,7 @@ export async function fetchWithTimeout(
   options: RequestInit,
   timeoutMs: number,
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return fetch(httpUrl(url), { ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
 }

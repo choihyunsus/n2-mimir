@@ -1,5 +1,6 @@
 // Time-based weight calculation — architecture.md section 8-1
 import type { ExperienceEntry, Insight } from '../types.js';
+import { timestampMillis } from './temporal.js';
 
 const DEFAULT_HALF_LIFE = 14; // 14 days
 
@@ -14,7 +15,10 @@ export function timeWeight(
   baseScore = 1.0,
   halfLife = DEFAULT_HALF_LIFE,
 ): number {
-  const daysSince = (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
+  if (!Number.isFinite(halfLife) || halfLife <= 0 || !Number.isFinite(baseScore)) throw new Error('Invalid time weight parameters');
+  const instant = timestampMillis(createdAt);
+  if (!Number.isFinite(instant)) return 0;
+  const daysSince = Math.max(0, (Date.now() - instant) / (1000 * 60 * 60 * 24));
   return baseScore * Math.pow(2, -daysSince / halfLife);
 }
 

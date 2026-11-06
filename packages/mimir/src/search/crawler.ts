@@ -1,6 +1,7 @@
 // search/crawler.ts — URL content extractor (article body extraction)
 
-import { DEFAULT_CONFIG } from './types.js';
+import { resolveSearchConfig } from './types.js';
+import { readResponseText } from '../http.js';
 import type { CrawledPage, SearchConfig } from './types.js';
 import { fetchWithTimeout } from './engine.js';
 
@@ -12,7 +13,7 @@ export async function crawlPage(
   url: string,
   config: SearchConfig = {},
 ): Promise<CrawledPage | null> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const cfg = resolveSearchConfig(config);
 
   try {
     const response = await fetchWithTimeout(url, {
@@ -23,12 +24,13 @@ export async function crawlPage(
       },
     }, cfg.timeout);
 
-    if (!response.ok) return null;
-
     const contentType = response.headers.get('content-type') ?? '';
-    if (!contentType.includes('text/html')) return null;
+    if (!response.ok || !contentType.includes('text/html')) {
+      await response.body?.cancel();
+      return null;
+    }
 
-    const html = await response.text();
+    const html = await readResponseText(response);
     const title = extractTitle(html);
     const content = extractContent(html, cfg.maxContentLength);
 
@@ -54,8 +56,8 @@ export async function crawlPages(
   urls: readonly string[],
   config: SearchConfig = {},
 ): Promise<CrawledPage[]> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  const targetUrls = urls.slice(0, cfg.maxCrawlPages);
+  const cfg = resolveSearchConfig(config);
+  const targetUrls = [...new Set(urls)].slice(0, cfg.maxCrawlPages);
   const batchSize = 3;
 
   const results: CrawledPage[] = [];
@@ -95,32 +97,7 @@ export function extractContent(html: string, maxLength: number): string {
     .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '');
 
-  // Step 2: Try to extract from semantic containers
-  let content = '';
-
-  // Priority 1: <article>
-  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
-  if (articleMatch) {
-    content = articleMatch[1];
-  }
-
-  // Priority 2: <main>
-  if (!content) {
-    const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-    if (mainMatch) content = mainMatch[1];
-  }
-
-  // Priority 3: <div role="main">
-  if (!content) {
-    const roleMatch = cleaned.match(/<div[^>]*role="main"[^>]*>([\s\S]*?)<\/div>/i);
-    if (roleMatch) content = roleMatch[1];
-  }
-
-  // Fallback: body content
-  if (!content) {
-    const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    content = bodyMatch ? bodyMatch[1] : cleaned;
-  }
+  const content = mainContainer(cleaned);
 
   // Step 3: Strip remaining HTML tags and clean whitespace
   const text = content
@@ -135,4 +112,18 @@ export function extractContent(html: string, maxLength: number): string {
     .trim();
 
   return text.slice(0, maxLength);
+}
+
+function mainContainer(html: string): string {
+  const containers = [
+    /<article[^>]*>([\s\S]*?)<\/article>/i,
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+    /<div[^>]*role="main"[^>]*>([\s\S]*?)<\/div>/i,
+    /<body[^>]*>([\s\S]*?)<\/body>/i,
+  ];
+  for (const pattern of containers) {
+    const match = html.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return html;
 }

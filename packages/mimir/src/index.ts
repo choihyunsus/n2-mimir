@@ -21,12 +21,15 @@ import { Embedder } from './semantic/embedder.js';
 import { embedAndStore, experienceToText, insightToText, semanticSearch } from './semantic/search.js';
 import { autoStudy as runAutoStudy } from './search/auto-study.js';
 import type { AutoStudyResult, SearchConfig } from './search/types.js';
+import { extractCandidates, storeMemories } from './learning/auto-extract.js';
+import type { SessionMessage, MemoryCandidate } from './learning/auto-extract.js';
+import type { MemoryScope } from './types.js';
 
 const DEFAULT_CONFIG: Required<MimirConfig> = {
   dbPath: './mimir.db',
   tokenBudget: 500,
   halfLife: 14,
-  llm: { provider: 'ollama', model: 'qwen3:8b', endpoint: 'http://localhost:11434' },
+  llm: { provider: 'ollama', model: '', endpoint: '' },
 };
 
 /**
@@ -56,12 +59,21 @@ export class Mimir {
   private readonly genericAdapter: GenericAdapter;
   private readonly embedder: Embedder;
 
+  get reasoning() { return this.db.reasoning; }
+  get study() { return this.db.study; }
+  get maintenance() { return this.db.maintenance; }
+
+  autoExtract(messages: readonly SessionMessage[], scope: Required<MemoryScope>,
+    accept?: (candidate: MemoryCandidate) => boolean): number {
+    return storeMemories(this.db, scope, extractCandidates(messages), accept);
+  }
+
   constructor(config?: MimirConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config } as Required<MimirConfig>;
+    this.embedder = new Embedder(this.config.llm);
     this.db = new MimirDatabase(this.config.dbPath);
     this.genericAdapter = new GenericAdapter();
     this.adapters.push(this.genericAdapter);
-    this.embedder = new Embedder(this.config.llm);
   }
 
   /** Register an external experience adapter */
@@ -79,7 +91,8 @@ export class Mimir {
     this.autoTag(entry.id, filled);
     // Background embedding (fire-and-forget — doesn't block)
     if (this.embedder.isAvailable()) {
-      void embedAndStore(this.db, this.embedder, 'experience', entry.id, experienceToText(entry));
+      void embedAndStore(this.db, this.embedder, 'experience', entry.id, experienceToText(entry))
+        .catch(error => console.error('[n2-mimir] Embedding storage failed:', error));
     }
   }
 
@@ -133,7 +146,7 @@ export class Mimir {
    * Includes confidence level for question sequence (§8-9).
    */
   recall(topic: string, project?: string, agent?: string): RecallResultWithConfidence {
-    return recall(this.db, topic, project, agent, this.config.tokenBudget, this.embedder);
+    return recall(this.db, topic, project, agent, 20, this.embedder);
   }
 
   /**
@@ -145,7 +158,7 @@ export class Mimir {
 
     // If semantic search available, enrich with cosine similarity results
     if (this.embedder.isAvailable()) {
-      const semanticResults = await semanticSearch(this.db, this.embedder, topic, 10);
+      const semanticResults = await semanticSearch(this.db, this.embedder, topic, 10, { project, agent });
       const experienceMap = new Map(baseResult.experiences.map((e) => [e.id, e]));
 
       for (const sr of semanticResults) {
@@ -183,29 +196,13 @@ export class Mimir {
     contrasts: number;
     patterns: number;
     insightsCreated: number;
+    insightsUpdated: number;
     graduated: string[];
+    collectionErrors: Array<{ adapterIndex: number; message: string }>;
+    insightErrors: Array<{ operationIndex: number; message: string }>;
+    rejected: number;
   }> {
-    // Step 1: Collect from all adapters concurrently (with delta learning)
-    let collected = 0;
-    const collectionPromises = this.adapters.map(adapter => 
-      adapter.collect(options.project, options.agent ?? 'default')
-    );
-    
-    const results = await Promise.allSettled(collectionPromises);
-    
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const rawExperiences = result.value;
-        for (const raw of rawExperiences) {
-          const normalized = normalize(raw);
-          if (!normalized) continue;
-          const upsertResult = this.db.upsertExperience(normalized);
-          if (upsertResult.isNew) collected++;
-        }
-      } else {
-        console.error('[n2-mimir] Adapter collection failed:', result.reason);
-      }
-    }
+    const collection = await this.collectExperiences(options);
 
     // Step 2: Analyze recent experiences
     const recentExperiences = this.db.queryExperiences({
@@ -226,16 +223,64 @@ export class Mimir {
     const dedupedOps = deduplicateOperations(this.db, allOps);
 
     // Step 5: Apply operations
-    const { applied } = applyOperations(this.db, dedupedOps);
+    const { applied, created, errors: insightErrors } = applyOperations(this.db, dedupedOps);
 
     // Step 6: Check graduation + retire dormant
-    const graduated = evaluateGraduation(this.db);
-    retireDormantInsights(this.db);
+    const graduated = evaluateGraduation(this.db, options);
+    retireDormantInsights(this.db, options);
 
+    await this.embedRecent(options);
+
+    return {
+      ...collection,
+      contrasts: contrastPairs.length,
+      patterns: repeatedPatterns.length,
+      insightsCreated: created,
+      insightsUpdated: applied - created,
+      insightErrors,
+      graduated,
+    };
+  }
+
+  private async collectExperiences(options: { project: string; agent?: string }): Promise<{
+    collected: number; rejected: number; collectionErrors: Array<{ adapterIndex: number; message: string }>;
+  }> {
+    // Step 1: Collect from all adapters concurrently (with delta learning)
+    let collected = 0;
+    let rejected = 0;
+    const collectionErrors: Array<{ adapterIndex: number; message: string }> = [];
+    const collectionPromises = this.adapters.map(async adapter =>
+      adapter.collect(options.project, options.agent ?? 'default')
+    );
+
+    const results = await Promise.allSettled(collectionPromises);
+
+    for (const [adapterIndex, result] of results.entries()) {
+      try {
+        if (result.status === 'rejected') throw result.reason;
+        const rawExperiences = result.value;
+        for (const raw of rawExperiences) {
+          const normalized = normalize({ ...raw, project: raw.project ?? options.project,
+            agent: raw.agent ?? options.agent ?? 'default' });
+          if (!normalized || normalized.project !== options.project ||
+              normalized.agent !== (options.agent ?? 'default')) { rejected++; continue; }
+          const upsertResult = this.db.upsertExperience(normalized);
+          if (upsertResult.isNew) collected++;
+        }
+        await this.adapters[adapterIndex].acknowledge?.(rawExperiences);
+      } catch (error) {
+        collectionErrors.push({ adapterIndex, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    return { collected, rejected, collectionErrors };
+  }
+
+  private async embedRecent(options: { project: string; agent?: string }): Promise<void> {
     // Step 7: Batch embed new experiences and insights (Tier 2 — if semantic available)
     if (this.embedder.isAvailable()) {
       const newExperiences = this.db.queryExperiences({
-        project: options.project, limit: 50,
+        project: options.project, agent: options.agent, limit: 50,
       });
       // Filter to un-embedded experiences only, then batch embed
       const unembeddedExps = newExperiences.filter(
@@ -252,7 +297,7 @@ export class Mimir {
         }
       }
 
-      const activeInsights = this.db.queryInsights({ status: 'active', limit: 50 });
+      const activeInsights = this.db.queryInsights({ ...options, status: 'active', limit: 50 });
       const unembeddedIns = activeInsights.filter(
         (ins) => !this.db.getEmbedding('insight', ins.id),
       );
@@ -268,13 +313,6 @@ export class Mimir {
       }
     }
 
-    return {
-      collected,
-      contrasts: contrastPairs.length,
-      patterns: repeatedPatterns.length,
-      insightsCreated: applied,
-      graduated,
-    };
   }
 
   // === Insight access ===
@@ -382,7 +420,7 @@ export type {
   ExperienceEntry, ExperienceInput, ExperienceFilter,
   Insight, InsightInput, InsightFilter,
   RawExperience, RecallResult, AssemblyResult,
-  MimirConfig, ExperienceAdapter, LlmConfig,
+  MimirConfig, ExperienceAdapter, LlmConfig, MemoryScope,
 } from './types.js';
 
 // Re-export recall types
@@ -398,3 +436,16 @@ export type { AutoStudyResult, SearchConfig, SearchResult, VerifiedFact } from '
 
 // Re-export orchestrator utilities
 export { assemble } from './orchestrator/assembler.js';
+
+export { LedgerAdapter } from './collector/adapters/ledger.js';
+export { JsonlAdapter, GenericAdapter } from './collector/index.js';
+export { classifyMemory, extractCandidates, toFrontmatter, toIndexEntry } from './learning/auto-extract.js';
+export type { SessionMessage, MemoryCandidate, MemoryType } from './learning/auto-extract.js';
+export type { StudyEntry, StudySession, StudyResult } from './learning/study.js';
+export type { AtomInput, AtomType, ReasoningAtom } from './reasoning/store.js';
+export type { VerificationOutcome } from './reasoning/chain.js';
+export type { BrowseRequest } from './learning/maintenance.js';
+export { freshnessWeight, decayRateFor } from './analyzer/temporal.js';
+export type { ReasoningStore } from './reasoning/store.js';
+export type { StudyStore } from './learning/study.js';
+export type { MaintenanceStore } from './learning/maintenance.js';

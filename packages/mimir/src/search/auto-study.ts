@@ -4,7 +4,8 @@ import { search } from './engine.js';
 import { crawlPages } from './crawler.js';
 import { extractClaims } from './extractor.js';
 import { verifyClaims } from './verifier.js';
-import { DEFAULT_CONFIG } from './types.js';
+import { resolveSearchConfig } from './types.js';
+import { createHash } from 'node:crypto';
 import type { SearchConfig, AutoStudyResult, VerifiedFact } from './types.js';
 import type { Embedder } from '../semantic/embedder.js';
 
@@ -38,7 +39,7 @@ const CATEGORY_MAP: readonly { keywords: readonly string[]; name: string }[] = [
 ];
 
 /**
- * Auto Study Pipeline — fully automated learning from web search.
+ * Auto Study Pipeline — search, extract, compare sources, and store reviewable candidates.
  *
  * Pipeline:
  *   1. Search (DuckDuckGo HTML)
@@ -53,19 +54,9 @@ export async function autoStudy(
   config: SearchConfig = {},
   embedder?: Embedder,
 ): Promise<AutoStudyResult> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const cfg = resolveSearchConfig(config);
 
-  const result: AutoStudyResult = {
-    topic,
-    semanticMode: !!embedder?.isAvailable(),
-    searchResults: 0,
-    pagesCrawled: 0,
-    claimsExtracted: 0,
-    factsVerified: 0,
-    factsPending: 0,
-    factsRejected: 0,
-    experiencesSaved: 0,
-  };
+  const result = emptyStudyResult(topic, !!embedder?.isAvailable());
 
   // ── Step 1: Search ──
   const searchResults = await search(topic, cfg);
@@ -99,7 +90,7 @@ export async function autoStudy(
 
   // ── Step 5: Store verified facts as Mimir experiences ──
   if (mimir) {
-    result.experiencesSaved = storeVerifiedFacts(mimir, topic, verifiedFacts);
+    result.experiencesSaved = storeVerifiedFacts(mimir, topic, verifiedFacts, cfg);
   }
 
   return result;
@@ -107,39 +98,32 @@ export async function autoStudy(
 
 /**
  * Store verified facts as Mimir experiences via delta learning.
- * Only stores facts with confidence >= 0.5.
+ * Stores corroborated candidates meeting the configured threshold. Preserves source URLs.
  */
 export function storeVerifiedFacts(
   mimir: MimirLike,
   topic: string,
   facts: readonly VerifiedFact[],
+  config: SearchConfig = {},
 ): number {
+  const cfg = resolveSearchConfig(config);
   let savedCount = 0;
 
   for (const fact of facts) {
-    if (fact.confidence < 0.5) continue;
+    if (fact.status !== 'verified' || !Number.isFinite(fact.confidence) || fact.confidence < cfg.minConfidence) continue;
 
-    const experienceType = fact.status === 'flagged' ? 'correction' : 'pattern';
-    const sourceList = fact.sources.slice(0, 3).join(', ');
-
-    try {
-      const result = mimir.deltaLearn({
-        agent: 'auto-study',
-        project: `study-${topic.toLowerCase().replace(/\s+/g, '-').slice(0, 30)}`,
-        type: experienceType,
-        category: detectStudyCategory(topic),
-        context: `Auto-study: ${topic} (${fact.sources.length} sources)`,
-        action: fact.claim.slice(0, 500),
-        outcome: `Verified by ${fact.sources.length} sources (confidence: ${fact.confidence})`,
-        correction: fact.contradiction ?? undefined,
-        sourceRef: sourceList,
-        sessionId: new Date().toISOString(),
-      });
-
-      if (result.isNew) savedCount++;
-    } catch {
-      // Delta learning may reject duplicates — that's fine
-    }
+    const sources = [...new Set(fact.sources)].sort();
+    const evidenceId = createHash('sha256').update(JSON.stringify([topic, fact.claim, sources])).digest('hex');
+    const result = mimir.deltaLearn({
+      agent: cfg.agent ?? 'auto-study',
+      project: cfg.project ?? `study-${topic.toLowerCase().replace(/\s+/g, '-').slice(0, 30)}`,
+      type: 'pattern', category: detectStudyCategory(topic),
+      context: `Web study candidate for ${topic}. Sources: ${sources.join(', ')}`,
+      action: fact.claim,
+      outcome: `Source-agreement score ${fact.confidence}; factual review required`,
+      sourceRef: `web-study:${evidenceId}`, sessionId: evidenceId,
+    });
+    if (result.isNew) savedCount++;
   }
 
   return savedCount;
@@ -160,4 +144,9 @@ export function detectStudyCategory(topic: string): string {
   }
 
   return bestName;
+}
+
+function emptyStudyResult(topic: string, semanticMode: boolean): AutoStudyResult {
+  return { topic, semanticMode, searchResults: 0, pagesCrawled: 0, claimsExtracted: 0,
+    factsVerified: 0, factsPending: 0, factsRejected: 0, experiencesSaved: 0 };
 }

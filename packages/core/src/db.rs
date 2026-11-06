@@ -4,12 +4,11 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::migration;
-use crate::schema;
 
 // === Global database handle registry ===
 
@@ -23,7 +22,6 @@ pub fn open(db_path: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let mut conn = Connection::open(db_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-    conn.execute_batch(schema::SCHEMA_SQL)?;
     migration::run_migrations(&mut conn)?;
 
     let mut counter = HANDLE_COUNTER.lock().unwrap();
@@ -46,12 +44,10 @@ pub fn close(handle: i64) -> Result<(), Box<dyn std::error::Error>> {
 /// Helper: access a connection by handle
 pub(crate) fn with_conn<F, T>(handle: i64, f: F) -> Result<T, Box<dyn std::error::Error>>
 where
-    F: FnOnce(&Connection) -> Result<T, Box<dyn std::error::Error>>,
+    F: FnOnce(&mut Connection) -> Result<T, Box<dyn std::error::Error>>,
 {
-    let registry = DB_REGISTRY.lock().unwrap();
-    let conn = registry
-        .get(&handle)
-        .ok_or("Invalid database handle")?;
+    let mut registry = DB_REGISTRY.lock().unwrap();
+    let conn = registry.get_mut(&handle).ok_or("Invalid database handle")?;
     f(conn)
 }
 
@@ -76,7 +72,7 @@ struct ExperienceInput {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExperienceRow {
+pub(crate) struct ExperienceRow {
     id: String,
     timestamp: String,
     session_id: String,
@@ -112,6 +108,8 @@ struct ExperienceFilter {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightInput {
+    project: Option<String>,
+    source_ids: Option<Vec<String>>,
     agent: String,
     description: String,
     compressed: String,
@@ -122,7 +120,7 @@ struct InsightInput {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InsightRow {
+pub(crate) struct InsightRow {
     id: String,
     created_at: String,
     updated_at: String,
@@ -143,6 +141,8 @@ struct InsightRow {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightFilter {
+    id: Option<String>,
+    project: Option<String>,
     agent: Option<String>,
     category: Option<String>,
     scope: Option<String>,
@@ -185,528 +185,25 @@ struct SimilarTag {
 
 /// Estimate token cost (1 token ≈ 4 chars)
 fn estimate_tokens(text: &str) -> i64 {
-    ((text.len() as f64) / 4.0).ceil() as i64
+    ((text.encode_utf16().count() as f64) / 4.0).ceil() as i64
 }
 
-// === Experience CRUD ===
+mod experience;
+pub use experience::*;
 
-pub fn insert_experience(handle: i64, input_json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let input: ExperienceInput = serde_json::from_str(input_json)?;
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let correction_text = input.correction.as_deref().unwrap_or("");
-    let token_cost = estimate_tokens(&format!(
-        "{} {} {} {}",
-        input.context, input.action, input.outcome, correction_text
-    ));
+mod insight;
+pub use insight::*;
 
-    with_conn(handle, |conn| {
-        conn.execute(
-            "INSERT INTO experiences (id, session_id, agent, project, type, category, severity,
-                context, action, outcome, correction, source_ref, frequency, token_cost, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14)",
-            params![
-                id,
-                input.session_id.as_deref().unwrap_or(""),
-                input.agent,
-                input.project,
-                input.exp_type,
-                input.category,
-                input.severity.as_deref().unwrap_or("info"),
-                input.context,
-                input.action,
-                input.outcome,
-                input.correction,
-                input.source_ref,
-                token_cost,
-                now,
-            ],
-        )?;
-        Ok(id)
-    })
-}
+mod tags;
+pub use tags::*;
 
-pub fn get_experience(handle: i64, id: &str) -> Result<String, Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, timestamp, session_id, agent, project, type, category, severity,
-                context, action, outcome, correction, source_ref, frequency, token_cost, created_at
-            FROM experiences WHERE id = ?1",
-        )?;
-        let result = stmt.query_row(params![id], |row| {
-            Ok(ExperienceRow {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                session_id: row.get(2)?,
-                agent: row.get(3)?,
-                project: row.get(4)?,
-                exp_type: row.get(5)?,
-                category: row.get(6)?,
-                severity: row.get(7)?,
-                context: row.get(8)?,
-                action: row.get(9)?,
-                outcome: row.get(10)?,
-                correction: row.get(11)?,
-                source_ref: row.get(12)?,
-                frequency: row.get(13)?,
-                token_cost: row.get(14)?,
-                created_at: row.get(15)?,
-            })
-        });
+mod effects;
+pub use effects::*;
 
-        match result {
-            Ok(row) => Ok(serde_json::to_string(&row)?),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
-            Err(e) => Err(e.into()),
-        }
-    })
-}
+mod stats;
+pub use stats::*;
 
-pub fn upsert_experience(handle: i64, input_json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let input: ExperienceInput = serde_json::from_str(input_json)?;
-    
-    let existing: Option<String> = with_conn(handle, |conn| {
-        conn.query_row(
-            "SELECT id FROM experiences WHERE agent = ?1 AND project = ?2 AND category = ?3 AND action = ?4 LIMIT 1",
-            params![input.agent, input.project, input.category, input.action],
-            |row| Ok(row.get(0)?),
-        ).ok()
-    })?;
+mod embeddings;
+pub use embeddings::*;
 
-    if let Some(id) = existing {
-        with_conn(handle, |conn| {
-            conn.execute(
-                "UPDATE experiences SET frequency = frequency + 1, created_at = datetime('now') WHERE id = ?1",
-                params![id],
-            )
-        })?;
-        let result = UpsertResult { is_new: false, id };
-        return Ok(serde_json::to_string(&result)?);
-    }
-
-    let new_id = insert_experience(handle, input_json)?;
-    let result = UpsertResult { is_new: true, id: new_id };
-    Ok(serde_json::to_string(&result)?)
-}
-
-pub fn query_experiences(handle: i64, filter_json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let filter: ExperienceFilter = serde_json::from_str(filter_json)?;
-
-    with_conn(handle, |conn| {
-        let mut conditions = vec!["1=1".to_string()];
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(ref project) = filter.project {
-            conditions.push("project = ?".to_string());
-            param_values.push(Box::new(project.clone()));
-        }
-        if let Some(ref agent) = filter.agent {
-            conditions.push("agent = ?".to_string());
-            param_values.push(Box::new(agent.clone()));
-        }
-        if let Some(ref category) = filter.category {
-            conditions.push("category = ?".to_string());
-            param_values.push(Box::new(category.clone()));
-        }
-        if let Some(ref exp_type) = filter.exp_type {
-            conditions.push("type = ?".to_string());
-            param_values.push(Box::new(exp_type.clone()));
-        }
-        if let Some(ref severity) = filter.severity {
-            conditions.push("severity = ?".to_string());
-            param_values.push(Box::new(severity.clone()));
-        }
-        if let Some(ref since) = filter.since {
-            conditions.push("created_at >= ?".to_string());
-            param_values.push(Box::new(since.clone()));
-        }
-
-        let limit = filter.limit.unwrap_or(100);
-        let sql = format!(
-            "SELECT id, timestamp, session_id, agent, project, type, category, severity,
-                context, action, outcome, correction, source_ref, frequency, token_cost, created_at
-            FROM experiences WHERE {} ORDER BY created_at DESC LIMIT {}",
-            conditions.join(" AND "),
-            limit
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(params_ref.as_slice(), |row| {
-            Ok(ExperienceRow {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                session_id: row.get(2)?,
-                agent: row.get(3)?,
-                project: row.get(4)?,
-                exp_type: row.get(5)?,
-                category: row.get(6)?,
-                severity: row.get(7)?,
-                context: row.get(8)?,
-                action: row.get(9)?,
-                outcome: row.get(10)?,
-                correction: row.get(11)?,
-                source_ref: row.get(12)?,
-                frequency: row.get(13)?,
-                token_cost: row.get(14)?,
-                created_at: row.get(15)?,
-            })
-        })?;
-
-        let results: Vec<ExperienceRow> = rows.filter_map(|r| r.ok()).collect();
-        Ok(serde_json::to_string(&results)?)
-    })
-}
-
-// === Insight CRUD ===
-
-pub fn insert_insight(handle: i64, input_json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let input: InsightInput = serde_json::from_str(input_json)?;
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let token_cost = input
-        .token_cost
-        .unwrap_or_else(|| estimate_tokens(&input.compressed));
-
-    with_conn(handle, |conn| {
-        conn.execute(
-            "INSERT INTO insights (id, created_at, updated_at, agent, description, compressed,
-                token_cost, category, scope, importance, confidence, effect_score, status)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 2, 0.5, 0.0, 'active')",
-            params![
-                id,
-                now,
-                now,
-                input.agent,
-                input.description,
-                input.compressed,
-                token_cost,
-                input.category,
-                input.scope.as_deref().unwrap_or("project"),
-            ],
-        )?;
-        Ok(id)
-    })
-}
-
-pub fn get_insight(handle: i64, id: &str) -> Result<String, Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, created_at, updated_at, agent, description, compressed, token_cost,
-                category, scope, importance, confidence, effect_score, status,
-                converted_type, converted_ref
-            FROM insights WHERE id = ?1",
-        )?;
-        let result = stmt.query_row(params![id], |row| {
-            Ok(InsightRow {
-                id: row.get(0)?,
-                created_at: row.get(1)?,
-                updated_at: row.get(2)?,
-                agent: row.get(3)?,
-                description: row.get(4)?,
-                compressed: row.get(5)?,
-                token_cost: row.get(6)?,
-                category: row.get(7)?,
-                scope: row.get(8)?,
-                importance: row.get(9)?,
-                confidence: row.get(10)?,
-                effect_score: row.get(11)?,
-                status: row.get(12)?,
-                converted_type: row.get(13)?,
-                converted_ref: row.get(14)?,
-            })
-        });
-
-        match result {
-            Ok(row) => Ok(serde_json::to_string(&row)?),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
-            Err(e) => Err(e.into()),
-        }
-    })
-}
-
-pub fn query_insights(handle: i64, filter_json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let filter: InsightFilter = serde_json::from_str(filter_json)?;
-
-    with_conn(handle, |conn| {
-        let mut conditions = vec!["1=1".to_string()];
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(ref agent) = filter.agent {
-            conditions.push("agent = ?".to_string());
-            param_values.push(Box::new(agent.clone()));
-        }
-        if let Some(ref category) = filter.category {
-            conditions.push("category = ?".to_string());
-            param_values.push(Box::new(category.clone()));
-        }
-        if let Some(ref scope) = filter.scope {
-            conditions.push("scope = ?".to_string());
-            param_values.push(Box::new(scope.clone()));
-        }
-        if let Some(ref status) = filter.status {
-            conditions.push("status = ?".to_string());
-            param_values.push(Box::new(status.clone()));
-        }
-        if let Some(min_imp) = filter.min_importance {
-            conditions.push(format!("importance >= {}", min_imp));
-        }
-
-        let limit = filter.limit.unwrap_or(50);
-        let sql = format!(
-            "SELECT id, created_at, updated_at, agent, description, compressed, token_cost,
-                category, scope, importance, confidence, effect_score, status,
-                converted_type, converted_ref
-            FROM insights WHERE {} ORDER BY importance DESC, effect_score DESC LIMIT {}",
-            conditions.join(" AND "),
-            limit
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(params_ref.as_slice(), |row| {
-            Ok(InsightRow {
-                id: row.get(0)?,
-                created_at: row.get(1)?,
-                updated_at: row.get(2)?,
-                agent: row.get(3)?,
-                description: row.get(4)?,
-                compressed: row.get(5)?,
-                token_cost: row.get(6)?,
-                category: row.get(7)?,
-                scope: row.get(8)?,
-                importance: row.get(9)?,
-                confidence: row.get(10)?,
-                effect_score: row.get(11)?,
-                status: row.get(12)?,
-                converted_type: row.get(13)?,
-                converted_ref: row.get(14)?,
-            })
-        })?;
-
-        let results: Vec<InsightRow> = rows.filter_map(|r| r.ok()).collect();
-        Ok(serde_json::to_string(&results)?)
-    })
-}
-
-// === Voting ===
-
-pub fn upvote_insight(handle: i64, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        conn.execute(
-            "UPDATE insights SET importance = importance + 1, updated_at = datetime('now') WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    })
-}
-
-pub fn downvote_insight(handle: i64, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        conn.execute(
-            "UPDATE insights SET
-                importance = MAX(0, importance - 1),
-                status = CASE WHEN importance <= 1 THEN 'retired' ELSE status END,
-                updated_at = datetime('now')
-            WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    })
-}
-
-pub fn graduate_insight(
-    handle: i64,
-    id: &str,
-    converted_type: &str,
-    converted_ref: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        conn.execute(
-            "UPDATE insights SET status = 'graduated', converted_type = ?1,
-                converted_ref = ?2, updated_at = datetime('now') WHERE id = ?3",
-            params![converted_type, converted_ref, id],
-        )?;
-        Ok(())
-    })
-}
-
-// === Tags ===
-
-pub fn set_tags(handle: i64, experience_id: &str, tags_json: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let tags: Vec<TagInput> = serde_json::from_str(tags_json)?;
-
-    with_conn(handle, |conn| {
-        conn.execute("DELETE FROM tags WHERE experience_id = ?1", params![experience_id])?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO tags (experience_id, level, tag) VALUES (?1, ?2, ?3)",
-        )?;
-        for tag in &tags {
-            stmt.execute(params![experience_id, tag.level, tag.tag])?;
-        }
-        Ok(())
-    })
-}
-
-pub fn find_similar_tags(handle: i64, tag: &str, auto_only: bool) -> Result<String, Box<dyn std::error::Error>> {
-    let threshold = if auto_only { 0.9 } else { 0.0 };
-    with_conn(handle, |conn| {
-        let mut stmt = conn.prepare("
-            SELECT CASE WHEN tag_a = ?1 THEN tag_b ELSE tag_a END as similar_tag, confidence 
-            FROM tag_similarity 
-            WHERE (tag_a = ?2 OR tag_b = ?3) AND confidence >= ?4 
-            ORDER BY confidence DESC
-        ")?;
-        let rows = stmt.query_map(params![tag, tag, tag, threshold], |row| {
-            Ok(SimilarTag {
-                tag: row.get(0)?,
-                confidence: row.get(1)?,
-            })
-        })?;
-        let results: Vec<SimilarTag> = rows.filter_map(|r| r.ok()).collect();
-        Ok(serde_json::to_string(&results)?)
-    })
-}
-
-pub fn upsert_tag_similarity(handle: i64, tag_a: &str, tag_b: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (a, b) = if tag_a < tag_b { (tag_a, tag_b) } else { (tag_b, tag_a) };
-    with_conn(handle, |conn| {
-        let existing: Option<(i64, i64)> = conn.query_row(
-            "SELECT id, confirmed_count FROM tag_similarity WHERE tag_a = ?1 AND tag_b = ?2",
-            params![a, b],
-            |row| Ok((row.get(0)?, row.get(1)?))
-        ).ok();
-
-        if let Some((id, count)) = existing {
-            let new_count = count + 1;
-            let new_confidence = 1.0 - (1.0 / (new_count as f64 + 1.0));
-            conn.execute(
-                "UPDATE tag_similarity SET confidence = ?1, confirmed_count = ?2, updated_at = datetime('now') WHERE id = ?3",
-                params![new_confidence, new_count, id],
-            )?;
-        } else {
-            conn.execute(
-                "INSERT INTO tag_similarity (tag_a, tag_b, confidence, confirmed_count) VALUES (?1, ?2, 0.5, 1)",
-                params![a, b],
-            )?;
-        }
-        Ok(())
-    })
-}
-
-// === Effect tracking ===
-
-pub fn record_effect(handle: i64, input_json: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let input: EffectInput = serde_json::from_str(input_json)?;
-
-    with_conn(handle, |conn| {
-        conn.execute(
-            "INSERT INTO effect_tracking (insight_id, session_id, was_relevant, was_followed, outcome)
-            VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                input.insight_id,
-                input.session_id,
-                input.was_relevant as i32,
-                input.was_followed as i32,
-                input.outcome,
-            ],
-        )?;
-
-        // Update insight's effect_score based on recent measurements
-        update_effect_score(conn, &input.insight_id)?;
-        Ok(())
-    })
-}
-
-fn update_effect_score(conn: &Connection, insight_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let result: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT COUNT(*) as total,
-                SUM(CASE WHEN outcome = 'positive' THEN 1 ELSE 0 END) as positive
-            FROM (SELECT * FROM effect_tracking WHERE insight_id = ?1
-                ORDER BY created_at DESC LIMIT 10)",
-            params![insight_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .ok();
-
-    if let Some((total, positive)) = result {
-        if total > 0 {
-            let score = positive as f64 / total as f64;
-            conn.execute(
-                "UPDATE insights SET effect_score = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![score, insight_id],
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-// === Stats ===
-
-pub fn get_stats(handle: i64) -> Result<String, Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        let exp: i64 = conn.query_row("SELECT COUNT(*) FROM experiences", [], |r| r.get(0))?;
-        let ins: i64 = conn.query_row("SELECT COUNT(*) FROM insights", [], |r| r.get(0))?;
-        let tags: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))?;
-
-        let result = serde_json::json!({
-            "experiences": exp,
-            "insights": ins,
-            "tags": tags,
-        });
-        Ok(result.to_string())
-    })
-}
-
-// === Embedding cache ===
-
-pub fn store_embedding(
-    handle: i64,
-    source_type: &str,
-    source_id: &str,
-    vector_json: &str,
-    model: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let vector: Vec<f32> = serde_json::from_str(vector_json)?;
-    let vector_bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
-    let id = Uuid::new_v4().to_string();
-
-    with_conn(handle, |conn| {
-        conn.execute(
-            "INSERT OR REPLACE INTO embeddings (id, source_type, source_id, vector, model)
-            VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, source_type, source_id, vector_bytes, model],
-        )?;
-        Ok(())
-    })
-}
-
-pub fn get_embedding(
-    handle: i64,
-    source_type: &str,
-    source_id: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    with_conn(handle, |conn| {
-        let result: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT vector FROM embeddings WHERE source_type = ?1 AND source_id = ?2
-                ORDER BY created_at DESC LIMIT 1",
-                params![source_type, source_id],
-                |row| row.get(0),
-            )
-            .ok();
-
-        match result {
-            Some(bytes) => {
-                let floats: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
-                Ok(serde_json::to_string(&floats)?)
-            }
-            None => Ok(String::new()),
-        }
-    })
-}
+pub(crate) mod rows;

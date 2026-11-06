@@ -1,306 +1,67 @@
-# n2-mimir
+# n2-mimir 3.0
 
-[![npm version](https://img.shields.io/npm/v/n2-mimir.svg)](https://www.npmjs.com/package/n2-mimir)
-[![License](https://img.shields.io/badge/license-Dual%20(Apache--2.0%20%2B%20Commercial)-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
-[![npm downloads](https://img.shields.io/npm/dm/n2-mimir.svg)](https://www.npmjs.com/package/n2-mimir)
+AI 에이전트의 경험을 SQLite에 저장하고, 근거가 있는 통찰을 만들고, 현재 작업에 관련된 기록을 회상하는 라이브러리입니다.
 
-**한국어** | [English](README.md)
-
-> **AI 경험 학습 엔진** — 경험에서 배우고, 행동을 바꿉니다. 북유럽 신화의 지혜의 수호자 미미르의 이름을 따왔습니다. 
-
-## Mimir란?
-
-AI 에이전트는 기억하지만, **학습하지 않습니다.** 매 세션마다 같은 실수를 반복합니다.
-
-Mimir는 이 고리를 끊습니다:
-```
-경험 → [분석 → 패턴 추출 → 인사이트 생성] → 행동 변화
-```
-
-**이름의 유래**: 북유럽 신화에서 오딘은 지혜를 얻기 위해 한쪽 눈을 바쳤습니다 — AI는 경험이라는 대가를 치릅니다.
-
-## 비전 — 왜 중요한가
-
-기존 AI 에이전트는 거대한 규칙 문서(constitution 파일, 시스템 프롬프트)에 의존합니다. 매 세션마다 수천 토큰을 소비하고 — AI가 따르지 않을 수도 있습니다.
-
-```
-Before (토큰 소모형):
- GEMINI.md (3000+ 토큰) → AI가 부팅 시 읽음 → 무시할 수 있음 → 매 세션 반복
-
-After (시스템 강제, 0 토큰):
- Ark → 규칙을 상태 머신으로 컴파일. AI가 우회 불가. 읽을 필요 없음.
- Clotho → 검증된 인사이트가 자동으로 규칙이 됨. 수동 작성 불필요.
- Mimir → 적시에 경험을 회상. 반복 설명 불필요.
-```
-
-## 아키텍처
-
-```
-┌─────────────────────────────────────┐
-│ n2-mimir │
-├──────────┬──────────────────────────┤
-│ Rust Core│ TypeScript Brain │
-│ (napi-rs)│ │
-│ │ collector/ → normalizer │
-│ SQLite │ analyzer/ → patterns │
-│ FTS5 │ insight/ → generator │
-│ Vector │ converter/ → overlay │
-│ │ tracker/ → scoring │
-│ │ orchestrator/ → recall │
-└──────────┴──────────────────────────┘
-```
-
-- **Rust Core**: SQLite, FTS5 전문 검색, SIMD 벡터 연산 (성능)
-- **TS Brain**: 패턴 분석, 인사이트 생성, 토큰 예산 기반 오버레이
-
-> **Rust 없어도 괜찮습니다.** Mimir는 자동으로 `better-sqlite3`로 폴백합니다. 모든 기능이 작동합니다 — SIMD 벡터 가속만 빠집니다.
+[English guide and runnable examples](README.md)
 
 ## 설치
 
-> **최고의 설치 방법**: AI에게 *"n2-mimir 설치해줘"* 라고 말하세요. 알아서 합니다. 
+GitHub 릴리스의 `n2-mimir-3.0.0.tgz`를 내려받아 설치합니다.
 
-```bash
-npm install n2-mimir
+```sh
+npm install ./n2-mimir-3.0.0.tgz better-sqlite3
 ```
 
-**ESM**과 **CJS** 모두 지원:
-```typescript
-// ESM
-import { Mimir } from 'n2-mimir';
+Node.js 20.3 이상을 사용합니다. 이번 배포 검증 환경은 Windows와 Node.js 24.13입니다. ESM과 CommonJS, 두 형식의 TypeScript 선언을 제공합니다. 기본 저장 엔진은 `better-sqlite3`이며, 로컬에서 빌드한 Rust 애드온도 같은 DB 구조를 사용합니다.
 
-// CJS
-const { Mimir } = require('n2-mimir');
+## 학습 흐름
+
+1. `deltaLearn`으로 결과와 출처를 기록합니다.
+2. `digest`로 실패·성공의 대비와 반복 패턴을 분석합니다.
+3. 출처를 연결한 통찰과 단계별 도출 기록을 저장합니다.
+4. `recall`이나 `overlay`로 현재 작업의 관련 기록을 읽습니다.
+5. 호스트가 제공한 실제 결과를 `recordEffect`로 기록합니다.
+
+여기서 학습하는 대상은 경험 기록과 그로부터 얻은 안내입니다. 호스트가 현재 요청에 맞는 안내를 골라 모델의 문맥에 넣습니다. 기본 패턴 분석은 로컬에서 동작하며, 임베딩과 웹 학습은 별도로 설정하거나 호출합니다.
+
+같은 관측을 재전송할 때는 동일한 `sourceRef`와 `sessionId`를 사용하세요. 재전송된 근거의 빈도를 중복 증가시키지 않습니다. 결과가 달라진 관측은 별도 기록으로 보관합니다. `digest` 결과의 `collectionErrors`와 `insightErrors`로 부분 실패를 확인할 수 있습니다.
+
+## 주요 기능
+
+- **작업별 격리** — 프로젝트와 에이전트 조건을 조회 제한보다 먼저 적용합니다. 출처 없는 과거 프로젝트 통찰은 프로젝트 전용 검색에서 제외됩니다.
+- **소울 연동** — 배포판 Soul 9.2의 Mimir DB 파일을 직접 함께 사용합니다. 기존 공통 테이블의 필드명과 버전 2를 사용하고, 추가 기능은 `mimir_*` 테이블과 독립 버전 키로 관리합니다. 임베딩은 모델 식별자와 little-endian float32 형식으로 저장합니다.
+- **원장 수집** — `LedgerAdapter`가 Soul의 `projects/<project>/ledger`에서 해당 프로젝트·에이전트의 기록을 읽습니다. 원장의 보고 내용과 출처를 보존합니다.
+- **학습 세션** — `study.start` → `study.add` → `study.end`를 사용합니다. 세션당 최대 100개 항목을 보관하며, 앱 재시작 후에도 이어갈 수 있습니다. 완료 재호출은 저장된 영수증을 돌려줍니다.
+- **근거 추적** — 전제·도출 과정·가설·검사·결론을 그래프로 저장합니다. `reasoning.traceInsight`로 조회하고 `invalidateEvidence`로 근거 무효화와 후속 신뢰도 하락을 기록합니다.
+- **결과 측정** — `n2-mimir/storage`의 `MimirDatabase.recordEffect`가 측정과 선택적 투표를 함께 저장합니다. 같은 통찰·세션의 동일한 측정은 한 번만 반영합니다.
+- **세션 기억 추출** — `autoExtract`가 사용자 역할 메시지에서 선호·피드백·프로젝트·참조 후보를 키워드로 분류합니다. 호스트 정책 콜백으로 저장 대상을 선택할 수 있습니다.
+- **탐색과 정리** — `maintenance`가 검색·페이지 이동·전체 집계·시간 가중치·정확히 일치하는 중복 병합·오래된 기록의 미리보기를 제공합니다. 원문과 출처는 보관합니다.
+
+## 검증 의미와 통합 범위
+
+도출 그래프의 검사 통과는 서로 다른 근거 수, 연결된 성공 사례, 무효화 여부 등을 확인한 결과입니다. 호스트는 결론의 타당성과 현재 작업에 대한 적용 여부를 판단해야 합니다. 과거 수동 통찰의 명시적 투표와 효과 측정 방식도 지원합니다.
+
+웹 학습의 `verified`는 세 곳 이상의 호스트에서 텍스트가 서로 부합한다는 휴리스틱 표시입니다. 사실 검토가 필요한 후보로 저장합니다. 반박된 항목과 기준 미달 항목은 학습 대상에서 제외합니다. DuckDuckGo 페이지 구조가 바뀌면 검색 어댑터를 갱신해야 할 수 있습니다.
+
+임베딩은 Ollama와 OpenAI 호환 API를 지원합니다. 실제 외부 모델의 품질과 과금은 사용하는 제공자에 따릅니다. 이번 HTTP 검증은 격리된 로컬 서버로 요청·응답과 오류 처리를 재현했습니다.
+
+오버레이의 토큰 예산은 문자열 길이를 4로 나눈 추정치입니다. 모델별 엄격한 제한은 호스트의 토크나이저로 계산해야 합니다.
+
+대붕이 제품의 기존 DB는 테이블 접두사와 로컬 시간 규칙이 달라 별도 마이그레이션이 필요합니다. 이번 배포판은 공개 Soul의 저장 계약에 맞췄습니다. 보안 정책 집행과 실행 도구의 허용 여부는 호스트와 해당 보안 모듈이 담당합니다.
+
+## 개발 검증
+
+```sh
+npm ci
+npm run build
+npm run typecheck
+npm run test:ts
+npm run build:native
+npm run test:rust
 ```
 
-> **요구사항**: Node.js >= 20 + `better-sqlite3` (C++ 빌드 도구 필요).
-> 설치 실패 시 에러 메시지에 플랫폼별 안내가 표시됩니다.
-
-## 빠른 시작
-
-### 단독 사용 (Soul 불필요)
-
-```typescript
-import { Mimir } from 'n2-mimir';
-
-const mimir = new Mimir({ dbPath: './mimir.db' });
-
-// 경험 추가 — agent/project는 선택사항 (기본값: 'default')
-mimir.addExperience({
- type: 'correction',
- category: 'workflow',
- context: '터미널 작업',
- action: '디렉토리 이름에 특수문자 사용',
- outcome: '터미널 명령어가 전부 멈춤',
- correction: '디렉토리 이름은 [a-z0-9-]만 사용',
-});
-
-// 멀티 에이전트 환경에서는 agent/project 지정
-mimir.addExperience({
- agent: 'rose',
- project: 'my-project',
- type: 'success',
- category: 'coding',
- context: 'React 최적화',
- action: 'React.memo를 리스트 아이템에 적용',
- outcome: '렌더링 시간 60% 감소',
-});
-
-// 관련 경험 회상
-const result = mimir.recall('directory naming');
-
-// 프롬프트 주입용 오버레이 (500t 예산)
-const overlay = mimir.overlay('directory naming');
-
-// Auto Study: 웹에서 자동 학습 (API 키 불필요)
-const study = await mimir.autoStudy('React Server Components');
-console.log(`검증된 팩트 ${study.factsVerified}개 학습 완료`);
-
-// Digest: 패턴 분석 + 인사이트 생성
-await mimir.digest({ project: 'default' });
-
-mimir.close();
-```
-
-### Soul 통합
-
-```typescript
-// Soul 부팅 시 Mimir가 자동 로드됩니다.
-// soul/lib/config.js에서 설정 — 추가 코드 불필요.
-```
-
-## API 레퍼런스
-
-### 경험 수집
-
-| 메서드 | 설명 |
-|--------|------|
-| `addExperience(input)` | 경험 추가 + 자동 태깅 + 임베딩 |
-| `addRawExperience(raw)` | 비정규 경험 추가 (자동 정규화) |
-| `queryExperiences(filter)` | project/agent/category/type 기준 조회 |
-| `deltaLearn(input)` | Upsert: 기존 → frequency++, 신규 → insert |
-
-### Recall & Overlay
-
-| 메서드 | 설명 |
-|--------|------|
-| `recall(topic, project?, agent?)` | FTS5 + 태그 + 시맨틱 검색 |
-| `recallAsync(topic, project?, agent?)` | + Ollama 코사인 유사도 |
-| `overlay(topic, project?, agent?)` | recall + assemble → 프롬프트 주입용 텍스트 |
-
-### Digest & Insights
-
-| 메서드 | 설명 |
-|--------|------|
-| `digest({ project, agent? })` | 수집 → 분석 → 인사이트 생성 |
-| `queryInsights(filter)` | 상태/중요도 기준 인사이트 조회 |
-| `getGraduatedInsights()` | 졸업된 인사이트 (규칙 변환 대기) |
-| `upvoteInsight(id)` / `downvoteInsight(id)` | 중요도 투표 |
-
-### Auto Study (웹 자동 학습)
-
-| 메서드 | 설명 |
-|--------|------|
-| `autoStudy(topic, config?)` | 검색 → 크롤링 → 추출 → 교차검증 → 저장 |
-
-### 태그 유사도
-
-| 메서드 | 설명 |
-|--------|------|
-| `confirmTagSimilarity(tagA, tagB)` | 사용자 확인 태그 유사도 기록 |
-| `findSimilarTags(tag, autoOnly?)` | 유사 태그 검색 (confidence 기반) |
-
-### 유틸리티
-
-| 메서드 | 설명 |
-|--------|------|
-| `getStats()` | `{ experiences, insights, tags }` 통계 |
-| `close()` | DB 연결 종료 |
-
-## 학습 생명주기
-
-Mimir의 학습은 인간의 전문성 습득과 같은 경로를 따릅니다:
-
-```
-경험 수집 (Experience)
- → 패턴 감지 (Pattern Detection)
- → 통찰 생성 (Insight Generation)
- → 반복 검증 (Voting + Merging)
- → 졸업 (Graduation)
- → 규칙 강제 (Ark Enforcement) ← Clotho
-```
-
-### 실제 사례 — "Rose가 부팅 순서를 학습한 과정"
-
-```
-Day 1: Rose가 부팅 후 n2_coding() 건너뜀
- → 사용자 수정 → Mimir가 수정 경험 기록
-
-Day 2: 또 건너뜀
- → 패턴 감지 → 인사이트 생성: "n2_boot 후 반드시 n2_coding 호출"
- → importance: 2
-
-Day 3-5: 계속 잊어먹음
- → 매 수정 = 기존 인사이트 upvote
- → importance: 2 → 6 → 12 → 20 → 34
-
-Day 6+: importance 34 = 최우선 인사이트
- → 매 부팅마다 주입 → 더 이상 안 잊어먹음 
-```
-
-## 토큰 비용
-
-| 단계 | LLM 토큰 | 비고 |
-|------|----------|------|
-| ACTIVATE (부팅) | ~500 | 오버레이 주입만. DB 쿼리는 무료 (로컬 SQLite) |
-| RECALL (작업 시작) | ~300 | 작업 기반 경험 회상 |
-| DIGEST (작업 종료) | 0 | 템플릿 기반, LLM 불필요 |
-| AUTO STUDY | ~20 (도구 호출만) | 전체 파이프라인은 서버사이드 0 토큰 |
-
-**모든 DB 연산 (검색, 태그, 투표, 점수) = 0 토큰.** 전부 로컬 SQLite에서 실행됩니다.
-
-## 설정
-
-```javascript
-// soul/lib/config.local.js
-module.exports = {
- MIMIR: {
- tokenBudget: 500, // 경험 오버레이 최대 토큰
- halfLife: 14, // 중요도 반감기 (일)
-
- // 시맨틱 검색 활성화 (Ollama 필요)
- llm: {
- provider: 'ollama',
- model: 'nomic-embed-text',
- endpoint: 'http://localhost:11434',
- },
- },
-};
-```
-
-## N2 생태계 — 함께하면 더 강력합니다
-
-| 패키지 | 역할 | npm | 단독 사용 |
-|--------|------|-----|:---------:|
-| **QLN** | 도구 라우팅 (1000+ 도구 → 1 라우터) | `n2-qln` | |
-| **Soul** | 에이전트 기억 & 세션 관리 | `n2-soul` | |
-| **Ark** | 보안 정책 & 코드 검증 | `n2-ark` | |
-| **Arachne** | 코드 컨텍스트 자동 조립 | `n2-arachne` | |
-| **Mimir** | 경험 학습 엔진 | `n2-mimir` | |
-| **Clotho** | 인사이트 → 규칙 자동 생성 | `n2-clotho` | |
-
-> 모든 패키지는 **100% 단독 사용 가능**합니다. 하지만 조합하면 마법이 일어납니다.
-
-### 시너지: 자기 개선 루프
-
-```
-사용자가 AI와 작업
- │
- ▼
-┌─── Soul (기억) ──────────────────────────────────┐
-│ 세션, 핸드오프, 결정 기록 │
-│ → work_start 시 Mimir recall 트리거 │
-│ → work_end 시 Mimir digest 트리거 │
-└───────────────┬──────────────────────────────────┘
- │
- ▼
-┌─── Mimir (학습) ────────────────────────────────┐
-│ 경험 수집 → 인사이트 생성 │
-│ → importance 30+ → 졸업 → Clotho로 │
-└───────────────┬──────────────────────────────────┘
- │
- ▼
-┌─── Clotho (규칙 자동화) ────────────────────────┐
-│ 졸업 인사이트 → .n2 규칙 파일 (0 토큰) │
-│ → Ark가 부팅 시 로드 │
-└───────────────┬──────────────────────────────────┘
- │
- ▼
-┌─── Ark (강제) ──────────────────────────────────┐
-│ 상태 머신: .n2 컴파일 → 위반 차단 │
-│ → 시스템 레벨 강제, AI 우회 불가 │
-│ → 더 많이 일할수록 → 더 똑똑한 규칙 │
-└─────────────────────────────────────────────────┘
-```
+개발 도구에는 Node.js 22.18 이상이 필요합니다. Rust 빌드에는 Rust 1.98과 플랫폼의 C/C++ 빌드 도구가 필요합니다. `build:native`는 현재 기기에 맞는 애드온을 생성합니다. 배포 압축 파일에는 JavaScript 빌드가 포함됩니다. 기능별 대응과 검증 범위는 [기능표](docs/FEATURES.md)에 정리했습니다.
 
 ## 라이선스
 
-| 용도 | 라이선스 | 비용 |
-|------|----------|------|
-| 개인 / 교육 | Apache 2.0 | **무료** |
-| 오픈소스 (비상업) | Apache 2.0 | **무료** |
-| 상업 / 기업 | 상업 라이선스 | [문의](mailto:lagi0730@gmail.com) |
-
-자세한 내용은 [LICENSE](./LICENSE)를 참조하세요.
-
-## 후원
-
-커피 없으면 스타라도 →
-
-> 후원하기 → [GitHub Sponsors](https://github.com/sponsors/choihyunsus)
-
----
-
- [nton2.com](https://nton2.com) · [npm](https://www.npmjs.com/package/n2-mimir) · lagi0730@gmail.com
-
-*Mimir — 지혜의 수호자. 경험에서 배우는 당신의 AI.* 
+저장소의 `LICENSE`에는 비상업적 사용과 상업적 사용을 구분하는 자체 조건이 있습니다. 패키지 메타데이터에서 해당 파일을 가리키며 `LICENSE-APACHE`, `THIRD-PARTY-NOTICES`도 함께 제공합니다. 대붕이에서 옮긴 부분의 MIT 고지와 Rust 코어의 MIT 표기를 포함합니다.

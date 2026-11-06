@@ -24,8 +24,8 @@ const CONTRADICTION_SIMILARITY_THRESHOLD = 0.4;
 /**
  * 5-Source Cross-Validation Engine (Hybrid: keyword + semantic).
  *
- * Compares claims across multiple sources to determine truthfulness.
- * A claim is considered verified when 3+ out of 5 sources agree.
+ * Measures text agreement across distinct source hostnames.
+ * The legacy verified label marks corroboration requiring factual review.
  *
  * @param claimsBySource - Claims grouped by source
  * @param minConfidence - Minimum confidence for 'verified' status
@@ -38,7 +38,7 @@ export async function verifyClaims(
 ): Promise<VerifiedFact[]> {
   if (claimsBySource.length === 0) return [];
 
-  const totalSources = claimsBySource.length;
+  const totalSources = new Set(claimsBySource.flat().map(claim => sourceHost(claim.source)).filter(Boolean)).size;
   const allClaims = claimsBySource.flat();
 
   if (allClaims.length === 0) return [];
@@ -51,9 +51,9 @@ export async function verifyClaims(
 
   for (const cluster of clusters) {
     const uniqueSources = new Set(cluster.map((c) => c.source));
-    const sourceCount = uniqueSources.size;
+    const sourceCount = new Set([...uniqueSources].map(sourceHost).filter(Boolean)).size;
     const confidence = calculateConfidence(sourceCount, totalSources);
-    const status = determineStatus(confidence, minConfidence);
+    const status = determineStatus(confidence, minConfidence, sourceCount);
     const representative = selectRepresentative(cluster);
     const contradiction = detectContradiction(cluster);
 
@@ -102,26 +102,9 @@ export async function clusterClaims(
     for (let j = i + 1; j < claims.length; j++) {
       if (used.has(j)) continue;
 
-      const keywordsB = claims[j].keywords.length > 0
-        ? claims[j].keywords
-        : extractKeywords(claims[j].text);
-
-      // Fast path: keyword similarity
-      const kwSim = keywordSimilarity(keywordsA, keywordsB);
-
-      if (kwSim >= KEYWORD_SIMILARITY_THRESHOLD) {
+      if (claimsMatch(keywordsA, claims[j], embeddings?.[i], embeddings?.[j])) {
         cluster.push(claims[j]);
         used.add(j);
-        continue;
-      }
-
-      // Semantic fallback: if keyword didn't match but embeddings exist
-      if (embeddings?.[i] && embeddings[j]) {
-        const cosSim = cosineSimilarity(embeddings[i], embeddings[j]);
-        if (cosSim >= SEMANTIC_SIMILARITY_THRESHOLD) {
-          cluster.push(claims[j]);
-          used.add(j);
-        }
       }
     }
 
@@ -129,6 +112,19 @@ export async function clusterClaims(
   }
 
   return clusters;
+}
+
+function claimsMatch(keywords: readonly string[], claim: Claim, left?: readonly number[], right?: readonly number[]): boolean {
+  const other = claim.keywords.length > 0 ? claim.keywords : extractKeywords(claim.text);
+  if (keywordSimilarity(keywords, other) >= KEYWORD_SIMILARITY_THRESHOLD) return true;
+  return !!(left?.length && right?.length && cosineSimilarity(left, right) >= SEMANTIC_SIMILARITY_THRESHOLD);
+}
+
+function sourceHost(source: string): string {
+  try {
+    const url = new URL(source);
+    return ['http:', 'https:'].includes(url.protocol) ? url.hostname.toLowerCase().replace(/^www\./, '') : '';
+  } catch { return ''; }
 }
 
 /**
@@ -171,24 +167,15 @@ export function keywordSimilarity(
 
 /** Calculate confidence score from source agreement ratio */
 export function calculateConfidence(agreeCount: number, totalSources: number): number {
-  if (totalSources <= 0) return 0;
-
-  if (agreeCount >= 5) return 1.0;
-  if (agreeCount === 4) return 0.9;
-  if (agreeCount === 3) return 0.7;
-  if (agreeCount === 2) return 0.5;
-  if (agreeCount === 1) return 0.2;
-
-  const ratio = agreeCount / totalSources;
-  if (ratio >= 0.8) return 0.95;
-  if (ratio >= 0.6) return 0.7;
-  if (ratio >= 0.4) return 0.5;
-  return 0.2;
+  if (!Number.isInteger(agreeCount) || !Number.isInteger(totalSources) || agreeCount <= 0 || totalSources <= 0) return 0;
+  const count = Math.min(agreeCount, totalSources);
+  if (count >= 5) return 1;
+  return [0, 0.2, 0.5, 0.7, 0.9][count];
 }
 
 /** Determine verification status from confidence score */
-function determineStatus(confidence: number, minConfidence: number): VerificationStatus {
-  if (confidence >= minConfidence) return 'verified';
+function determineStatus(confidence: number, minConfidence: number, sourceCount: number): VerificationStatus {
+  if (sourceCount >= 3 && confidence >= minConfidence) return 'verified';
   if (confidence >= 0.4) return 'pending';
   return 'unverified';
 }
@@ -211,8 +198,8 @@ export function detectContradiction(cluster: readonly Claim[]): string | null {
       const textA = cluster[i].text.toLowerCase();
       const textB = cluster[j].text.toLowerCase();
 
-      const aNegated = NEGATION_WORDS.some((n) => textA.includes(n));
-      const bNegated = NEGATION_WORDS.some((n) => textB.includes(n));
+      const aNegated = hasNegation(textA);
+      const bNegated = hasNegation(textB);
 
       if (aNegated !== bNegated) {
         const sim = keywordSimilarity(
@@ -227,4 +214,10 @@ export function detectContradiction(cluster: readonly Claim[]): string | null {
   }
 
   return null;
+}
+
+function hasNegation(text: string): boolean {
+  return NEGATION_WORDS.some(word => /^[a-z]/.test(word)
+    ? new RegExp(`\\b${word}\\b`, 'i').test(text)
+    : text.includes(word));
 }

@@ -1,6 +1,6 @@
 // Effect scorer — track whether injected insights actually improved behavior
 import type { MimirDatabase } from '../store/database.js';
-import type { EffectMeasurement } from '../types.js';
+import type { EffectMeasurement, MemoryScope } from '../types.js';
 
 /**
  * Record that an insight was used in a session and measure its effect.
@@ -11,25 +11,16 @@ export function trackEffect(
   db: MimirDatabase,
   measurement: EffectMeasurement,
 ): void {
-  db.recordEffect(measurement);
-
-  // Auto-upvote effective insights
-  if (measurement.outcome === 'positive' && measurement.wasFollowed) {
-    db.upvoteInsight(measurement.insightId);
-  }
-
-  // Auto-downvote ineffective insights (was injected but outcome negative)
-  if (measurement.outcome === 'negative' && measurement.wasRelevant) {
-    db.downvoteInsight(measurement.insightId);
-  }
+  db.recordEffect(measurement, true);
 }
 
 /**
  * Batch evaluate all active insights for graduation eligibility.
  * Called after digest to check if any insights should be graduated.
  */
-export function evaluateGraduation(db: MimirDatabase): string[] {
+export function evaluateGraduation(db: MimirDatabase, scope: MemoryScope = {}): string[] {
   const candidates = db.queryInsights({
+    ...scope,
     status: 'active',
     minImportance: 5,
     limit: 50,
@@ -38,7 +29,7 @@ export function evaluateGraduation(db: MimirDatabase): string[] {
   const graduatedIds: string[] = [];
 
   for (const insight of candidates) {
-    if (insight.effectScore >= 0.8) {
+    if (insight.effectScore >= 0.8 && db.reasoning.latestConclusion(insight.id)?.isVerified !== false) {
       // Mark as graduated — converter will pick it up
       db.graduateInsight(insight.id, 'pending', '');
       graduatedIds.push(insight.id);

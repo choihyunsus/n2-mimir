@@ -23,12 +23,12 @@ describe('MimirDatabase', () => {
   describe('insertExperience', () => {
     it('should insert and return an experience', () => {
       const exp = db.insertExperience({
-        agent: 'rose', project: 'test', type: 'failure',
+        agent: 'worker', project: 'test', type: 'failure',
         category: 'coding_pattern', context: 'test context',
         action: 'test action', outcome: 'test outcome',
       });
       expect(exp.id).toBeTruthy();
-      expect(exp.agent).toBe('rose');
+      expect(exp.agent).toBe('worker');
       expect(exp.project).toBe('test');
       expect(exp.type).toBe('failure');
       expect(exp.tokenCost).toBeGreaterThan(0);
@@ -54,7 +54,7 @@ describe('MimirDatabase', () => {
 
     it('should return inserted experience', () => {
       const inserted = db.insertExperience({
-        agent: 'rose', project: 'test', type: 'correction',
+        agent: 'worker', project: 'test', type: 'correction',
         category: 'file_system', context: 'ctx', action: 'act',
         outcome: 'out', correction: 'fix it',
       });
@@ -111,7 +111,7 @@ describe('MimirDatabase', () => {
   describe('insertInsight', () => {
     it('should create insight with default values', () => {
       const insight = db.insertInsight({
-        agent: 'rose', description: 'Use ; instead of &&',
+        agent: 'worker', description: 'Use ; instead of &&',
         compressed: '; not &&', category: 'coding_pattern',
       });
       expect(insight.importance).toBe(2);

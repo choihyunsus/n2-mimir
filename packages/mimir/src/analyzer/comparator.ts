@@ -12,15 +12,16 @@ export function findContrastPairs(
   const byCategory = new Map<string, { successes: ExperienceEntry[]; failures: ExperienceEntry[] }>();
 
   for (const exp of experiences) {
-    const entry = byCategory.get(exp.category) ?? { successes: [], failures: [] };
+    const key = JSON.stringify([exp.project, exp.agent, exp.category]);
+    const entry = byCategory.get(key) ?? { successes: [], failures: [] };
     if (exp.type === 'success') entry.successes.push(exp);
     if (exp.type === 'failure' || exp.type === 'correction') entry.failures.push(exp);
-    byCategory.set(exp.category, entry);
+    byCategory.set(key, entry);
   }
 
   const pairs: ContrastPair[] = [];
 
-  for (const [category, { successes, failures }] of byCategory) {
+  for (const { successes, failures } of byCategory.values()) {
     // Pair each failure with the closest success (by time)
     for (const failure of failures) {
       const failTime = new Date(failure.createdAt).getTime();
@@ -36,7 +37,7 @@ export function findContrastPairs(
       }
 
       if (closest) {
-        pairs.push({ failure, success: closest, category });
+        pairs.push({ failure, success: closest, category: failure.category });
       }
     }
   }

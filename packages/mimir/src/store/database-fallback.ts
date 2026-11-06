@@ -8,7 +8,12 @@ import type {
   EffectMeasurement,
 } from '../types.js';
 import { SCHEMA_SQL } from './schema.js';
+import { EXPERIENCE_SCOPE_SQL, scopeParams } from './scope.js';
+import { linkSources } from './sources.js';
+import { encodeVector, decodeVector } from './vector.js';
+import type { MemoryScope } from '../types.js';
 import { runMigrations } from './migrations.js';
+import { sanitizeFtsQuery } from './fts.js';
 import type BetterSqlite3 from 'better-sqlite3';
 import { randomUUID, randomBytes } from 'crypto';
 
@@ -38,13 +43,16 @@ export class FallbackStore {
     this.db = db;
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
-    this.db.exec(SCHEMA_SQL);
-    runMigrations(this.db);
+    this.db.transaction(() => {
+      this.db.exec(SCHEMA_SQL);
+      runMigrations(this.db);
+    }).immediate();
   }
 
   // === Experience CRUD ===
 
   insertExperience(input: ExperienceInput): ExperienceEntry {
+    scopeParams(input);
     const id = uuid();
     const now = new Date().toISOString();
     const tokenCost = estimateTokens(
@@ -72,6 +80,7 @@ export class FallbackStore {
   }
 
   queryExperiences(filter: ExperienceFilter): ExperienceEntry[] {
+    scopeParams(filter);
     const conditions: string[] = ['1=1'];
     const params: unknown[] = [];
 
@@ -90,45 +99,60 @@ export class FallbackStore {
     return rows.map((r) => this.mapExperience(r));
   }
 
-  searchExperiences(query: string, limit: number): RankedExperience[] {
+  searchExperiences(query: string, limit: number, scope?: MemoryScope): RankedExperience[] {
+    const ownerParameters = scopeParams(scope);
     // Sanitize FTS5 query: escape special characters to prevent MATCH syntax errors
     const sanitized = sanitizeFtsQuery(query);
     if (!sanitized) return [];
 
-    try {
       const sql = `
         SELECT e.*, rank
         FROM experiences_fts fts
         JOIN experiences e ON e.rowid = fts.rowid
-        WHERE experiences_fts MATCH ?
+        WHERE experiences_fts MATCH ? AND ${EXPERIENCE_SCOPE_SQL}
         ORDER BY rank
         LIMIT ?
       `;
-      const rows = this.db.prepare(sql).all(sanitized, limit) as Array<Record<string, unknown>>;
+      const rows = this.db.prepare(sql).all(sanitized, ...ownerParameters, limit) as Array<Record<string, unknown>>;
       return rows.map((r, i) => ({
         experience: this.mapExperience(r),
         rank: i + 1,
       }));
-    } catch {
-      // FTS5 query syntax error — fall back to empty results rather than crash
-      return [];
-    }
   }
 
   // === Insight CRUD ===
 
   insertInsight(input: InsightInput): Insight {
+    scopeParams(input);
+    if (input.project !== undefined && input.sourceIds === undefined) throw new Error('Project-scoped insertion requires source IDs');
     const id = uuid();
     const now = new Date().toISOString();
     const tokenCost = input.tokenCost ?? estimateTokens(input.compressed || input.description);
 
+    return this.db.transaction(() => {
     this.db.prepare(`
       INSERT INTO insights (id, created_at, updated_at, agent, description, compressed,
         token_cost, category, scope, importance, confidence, effect_score, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2, 0.5, 0.0, 'active')
     `).run(id, now, now, input.agent, input.description, input.compressed, tokenCost, input.category, input.scope ?? 'project');
 
+    if (input.sourceIds !== undefined) {
+      linkSources(this.db, id, input.sourceIds);
+      if (input.project !== undefined) {
+        const source = this.getExperience(input.sourceIds[0]);
+        if (source?.project !== input.project) throw new Error('Source project differs from requested project');
+      }
+    }
     return this.getInsight(id)!;
+    }).immediate();
+  }
+
+  reinforceInsight(id: string, sources: ReadonlyArray<string>): number {
+    return this.db.transaction(() => {
+      const added = linkSources(this.db, id, sources);
+      if (added > 0) this.upvoteInsight(id);
+      return added;
+    }).immediate();
   }
 
   getInsight(id: string): Insight | undefined {
@@ -137,10 +161,21 @@ export class FallbackStore {
   }
 
   queryInsights(filter: InsightFilter): Insight[] {
+    scopeParams(filter);
     const conditions: string[] = ['1=1'];
     const params: unknown[] = [];
+    if (filter.id !== undefined) { conditions.push('id = ?'); params.push(filter.id); }
 
     if (filter.agent) { conditions.push('agent = ?'); params.push(filter.agent); }
+    if (filter.project !== undefined) {
+      scopeParams({ project: filter.project, agent: filter.agent });
+      conditions.push(`(scope IN ('global','agent') OR (
+        EXISTS (SELECT 1 FROM experience_insight_links l JOIN experiences e ON e.id=l.experience_id
+          WHERE l.insight_id=insights.id AND l.relation='supports' AND e.project=? AND e.agent=insights.agent)
+        AND NOT EXISTS (SELECT 1 FROM experience_insight_links l JOIN experiences e ON e.id=l.experience_id
+          WHERE l.insight_id=insights.id AND (e.project<>? OR e.agent<>insights.agent))))`);
+      params.push(filter.project, filter.project);
+    }
     if (filter.category) { conditions.push('category = ?'); params.push(filter.category); }
     if (filter.scope) { conditions.push('scope = ?'); params.push(filter.scope); }
     if (filter.status) { conditions.push('status = ?'); params.push(filter.status); }
@@ -187,42 +222,64 @@ export class FallbackStore {
     })();
   }
 
-  getTagFrequencies(tags: ReadonlyArray<string>, limit: number): TagFrequency[] {
+  getTagFrequencies(tags: ReadonlyArray<string>, limit: number, scope?: MemoryScope): TagFrequency[] {
     if (tags.length === 0) return [];
     const placeholders = tags.map(() => '?').join(',');
-    const sql = `SELECT level, tag, COUNT(*) as frequency FROM tags WHERE tag IN (${placeholders}) GROUP BY level, tag ORDER BY frequency DESC LIMIT ?`;
-    return this.db.prepare(sql).all(...tags, limit) as TagFrequency[];
+    const sql = `SELECT level, tag, COUNT(*) as frequency FROM tags t JOIN experiences e ON e.id = t.experience_id WHERE tag IN (${placeholders}) AND ${EXPERIENCE_SCOPE_SQL} GROUP BY level, tag ORDER BY frequency DESC LIMIT ?`;
+    return this.db.prepare(sql).all(...tags, ...scopeParams(scope), limit) as TagFrequency[];
   }
 
-  findExperiencesByTags(tags: ReadonlyArray<string>, limit: number): ExperienceEntry[] {
+  findExperiencesByTags(tags: ReadonlyArray<string>, limit: number, scope?: MemoryScope): ExperienceEntry[] {
     if (tags.length === 0) return [];
     const placeholders = tags.map(() => '?').join(',');
-    const sql = `SELECT DISTINCT e.* FROM experiences e JOIN tags t ON t.experience_id = e.id WHERE t.tag IN (${placeholders}) ORDER BY e.created_at DESC LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...tags, limit) as Record<string, unknown>[];
+    const sql = `SELECT DISTINCT e.* FROM experiences e JOIN tags t ON t.experience_id = e.id WHERE t.tag IN (${placeholders}) AND ${EXPERIENCE_SCOPE_SQL} ORDER BY e.created_at DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...tags, ...scopeParams(scope), limit) as Record<string, unknown>[];
     return rows.map((r) => this.mapExperience(r));
   }
 
   // === Effect tracking ===
 
-  recordEffect(measurement: EffectMeasurement): void {
-    this.db.prepare(`
+  recordEffect(measurement: EffectMeasurement, applyVote = false): boolean {
+    const { insightId, sessionId, wasRelevant, wasFollowed, outcome } = measurement;
+    if (typeof insightId !== 'string' || !insightId.trim() ||
+        typeof sessionId !== 'string' || !sessionId.trim() ||
+        typeof wasRelevant !== 'boolean' || typeof wasFollowed !== 'boolean' ||
+        !['positive', 'negative', 'neutral'].includes(outcome)) {
+      throw new Error('Invalid effect measurement');
+    }
+    return this.db.transaction(() => {
+      const previous = this.db.prepare(`
+        SELECT was_relevant, was_followed, outcome FROM effect_tracking
+        WHERE insight_id = ? AND session_id = ? ORDER BY id DESC LIMIT 1
+      `).get(insightId, sessionId) as { was_relevant: number; was_followed: number; outcome: string } | undefined;
+      if (previous) {
+        if (previous.was_relevant !== Number(wasRelevant) ||
+            previous.was_followed !== Number(wasFollowed) || previous.outcome !== outcome) {
+          throw new Error('Conflicting effect measurement for this insight and session');
+        }
+        return false;
+      }
+      this.db.prepare(`
       INSERT INTO effect_tracking (insight_id, session_id, was_relevant, was_followed, outcome)
       VALUES (?, ?, ?, ?, ?)
-    `).run(
-      measurement.insightId, measurement.sessionId,
-      measurement.wasRelevant ? 1 : 0,
-      measurement.wasFollowed ? 1 : 0,
-      measurement.outcome,
-    );
-    this.updateEffectScore(measurement.insightId);
+      `).run(insightId, sessionId, Number(wasRelevant), Number(wasFollowed), outcome);
+      this.updateEffectScore(insightId);
+      if (applyVote && outcome === 'positive' && wasFollowed) this.upvoteInsight(insightId);
+      if (applyVote && outcome === 'negative' && wasRelevant) this.downvoteInsight(insightId);
+      return true;
+    }).immediate();
   }
 
   private updateEffectScore(insightId: string): void {
     const result = this.db.prepare(`
       SELECT COUNT(*) as total,
         SUM(CASE WHEN outcome = 'positive' THEN 1 ELSE 0 END) as positive
-      FROM effect_tracking WHERE insight_id = ?
-      ORDER BY created_at DESC LIMIT 10
+      FROM (
+        SELECT outcome FROM effect_tracking WHERE id IN (
+          SELECT MAX(id) FROM effect_tracking WHERE insight_id = ? GROUP BY session_id
+        )
+        ORDER BY created_at DESC, id DESC LIMIT 10
+      )
     `).get(insightId) as { total: number; positive: number } | undefined;
 
     if (result && result.total > 0) {
@@ -244,8 +301,7 @@ export class FallbackStore {
 
   storeEmbedding(sourceType: string, sourceId: string, vector: readonly number[], model: string): void {
     const id = uuid();
-    const buffer = new Float32Array(vector).buffer;
-    const vectorBlob = Buffer.from(buffer);
+    const vectorBlob = encodeVector(vector);
 
     this.db.prepare(`
       INSERT OR REPLACE INTO embeddings (id, source_type, source_id, vector, model)
@@ -257,32 +313,31 @@ export class FallbackStore {
     const row = this.db.prepare(`
       SELECT vector, model FROM embeddings
       WHERE source_type = ? AND source_id = ?
-      ORDER BY created_at DESC LIMIT 1
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
     `).get(sourceType, sourceId) as { vector: Buffer; model: string } | undefined;
 
     if (!row) return null;
-    const float32 = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength / 4);
-    return { vector: Array.from(float32), model: row.model };
+    return { vector: decodeVector(row.vector), model: row.model };
   }
 
-  getAllEmbeddings(): Array<{ sourceType: string; sourceId: string; vector: readonly number[] }> {
+  getAllEmbeddings(): Array<{ sourceType: string; sourceId: string; vector: readonly number[]; model: string }> {
     const rows = this.db.prepare(`
-      SELECT source_type, source_id, vector FROM embeddings
-    `).all() as Array<{ source_type: string; source_id: string; vector: Buffer }>;
+      SELECT source_type, source_id, vector, model FROM embeddings
+    `).all() as Array<{ source_type: string; source_id: string; vector: Buffer; model: string }>;
 
     return rows.map((row) => {
-      const float32 = new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength / 4);
       return {
         sourceType: row.source_type,
         sourceId: row.source_id,
-        vector: Array.from(float32),
+        vector: decodeVector(row.vector),
+        model: row.model,
       };
     });
   }
 
   // === Layer Intersection ===
 
-  findByTagsIntersection(tagLayers: ReadonlyArray<ReadonlyArray<string>>, limit: number): ExperienceEntry[] {
+  findByTagsIntersection(tagLayers: ReadonlyArray<ReadonlyArray<string>>, limit: number, scope?: MemoryScope): ExperienceEntry[] {
     if (tagLayers.length === 0) return [];
 
     const joins: string[] = [];
@@ -300,8 +355,8 @@ export class FallbackStore {
 
     if (joins.length === 0) return [];
 
-    const sql = `SELECT DISTINCT e.* FROM experiences e ${joins.join(' ')} ORDER BY e.created_at DESC LIMIT ?`;
-    params.push(limit);
+    const sql = `SELECT DISTINCT e.* FROM experiences e ${joins.join(' ')} WHERE ${EXPERIENCE_SCOPE_SQL} ORDER BY e.created_at DESC LIMIT ?`;
+    params.push(...scopeParams(scope), limit);
 
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map((r) => this.mapExperience(r));
@@ -310,23 +365,24 @@ export class FallbackStore {
   // === Delta Learning ===
 
   upsertExperience(input: ExperienceInput): { isNew: boolean; id: string } {
-    const existing = this.db.prepare(`
-      SELECT id, frequency FROM experiences
-      WHERE agent = ? AND project = ? AND category = ? AND action = ?
-      LIMIT 1
-    `).get(input.agent, input.project, input.category, input.action) as { id: string; frequency: number } | undefined;
-
-    if (existing) {
-      this.db.prepare(`
-        UPDATE experiences
-        SET frequency = frequency + 1, created_at = datetime('now')
-        WHERE id = ?
-      `).run(existing.id);
-      return { isNew: false, id: existing.id };
-    }
-
-    const entry = this.insertExperience(input);
-    return { isNew: true, id: entry.id };
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT id FROM experiences
+        WHERE agent = ? AND project = ? AND category = ? AND action = ?
+          AND type = ? AND context = ? AND outcome = ? AND severity = ?
+          AND correction IS ? AND source_ref IS ? AND session_id = ?
+        ORDER BY created_at, id LIMIT 1
+      `).get(input.agent, input.project, input.category, input.action,
+        input.type, input.context, input.outcome, input.severity ?? 'info',
+        input.correction ?? null, input.sourceRef ?? null, input.sessionId ?? '') as { id: string } | undefined;
+      if (existing) {
+        if (!input.sourceRef?.trim()) {
+          this.db.prepare('UPDATE experiences SET frequency = frequency + 1 WHERE id = ?').run(existing.id);
+        }
+        return { isNew: false, id: existing.id };
+      }
+      return { isNew: true, id: this.insertExperience(input).id };
+    }).immediate();
   }
 
   // === Tag Similarity ===
@@ -410,25 +466,4 @@ export class FallbackStore {
       convertedRef: row['converted_ref'] as string | undefined,
     };
   }
-}
-
-/**
- * Sanitize FTS5 query string to prevent MATCH syntax errors.
- * Removes FTS5 meta-characters and operators that can cause runtime crashes.
- * Returns null if no valid search terms remain.
- */
-function sanitizeFtsQuery(query: string): string | null {
-  // Remove FTS5 special operators and syntax characters
-  const sanitized = query
-    .replace(/[*^"(){}[\]]/g, '')   // Remove special punctuation
-    .replace(/\bNEAR\b/gi, '')      // Remove NEAR operator
-    .replace(/\bNOT\b/gi, '')       // Remove NOT operator
-    .replace(/\bAND\b/gi, '')       // Remove AND operator (FTS5 uses implicit AND)
-    .replace(/\s+/g, ' ')           // Collapse whitespace
-    .trim();
-
-  // Return null if nothing meaningful remains
-  if (!sanitized || sanitized.length < 2) return null;
-
-  return sanitized;
 }

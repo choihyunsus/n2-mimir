@@ -1,123 +1,95 @@
-// Embedder — Ollama/OpenAI embedding API client
-// Gracefully inactive when no endpoint is configured
-
+// Ollama and OpenAI-compatible embedding client with bounded caching and I/O.
 import type { LlmConfig } from '../types.js';
+import { createHash } from 'node:crypto';
+import { httpUrl, readResponseText } from '../http.js';
 
-/** Embedding result */
 export interface EmbeddingResult {
   readonly vector: readonly number[];
   readonly model: string;
 }
 
-/**
- * Embedder — converts text into embedding vectors.
- *
- * - Ollama: POST /api/embeddings { model, prompt }
- * - OpenAI: POST /v1/embeddings { model, input }
- * - No endpoint configured → isAvailable() = false → embed() returns null
- */
+const CACHE_LIMIT = 256;
+const MAX_INPUT_CHARS = 65536;
+const MAX_DIMENSIONS = 65536;
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const BATCH_CONCURRENCY = 3;
+
 export class Embedder {
-  private readonly config: LlmConfig | undefined;
-  private readonly _available: boolean;
-  private readonly _cache: Map<string, EmbeddingResult> = new Map();
+  private readonly config?: LlmConfig;
+  private readonly cache = new Map<string, EmbeddingResult>();
+  private lastError: string | null = null;
 
   constructor(config?: LlmConfig) {
-    this.config = config;
-    this._available = !!(config?.endpoint && config.model);
+    this.config = config ? { ...config } : undefined;
+    if (config?.endpoint) httpUrl(config.endpoint);
   }
 
-  /** Whether semantic search is enabled */
   isAvailable(): boolean {
-    return this._available;
+    return !!(this.config?.endpoint && this.config.model &&
+      ['ollama', 'openai'].includes(this.config.provider));
   }
 
-  /** Convert text to embedding vector. Returns null if inactive */
-  async embed(text: string): Promise<EmbeddingResult | null> {
-    if (!this._available || !this.config?.endpoint) return null;
+  getLastError(): string | null { return this.lastError; }
 
+  async embed(text: string): Promise<EmbeddingResult | null> {
+    if (!this.isAvailable()) return null;
     try {
+      if (typeof text !== 'string' || !text.trim() || text.length > MAX_INPUT_CHARS) {
+        throw new Error('Embedding input must contain 1–65536 characters');
+      }
+      const cached = this.embedSync(text);
+      if (cached) return cached;
       const vector = await this.callApi(text);
-      const result: EmbeddingResult = { vector, model: this.config.model };
-      this._cache.set(text, result);
+      if (!Array.isArray(vector) || vector.length === 0 || vector.length > MAX_DIMENSIONS ||
+          !vector.every(value => typeof value === 'number' && Number.isFinite(value))) {
+        throw new Error('Invalid embedding vector in response');
+      }
+      const result = Object.freeze({ vector: Object.freeze([...vector]), model: this.config!.model });
+      this.cache.set(this.cacheKey(text), result);
+      if (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
+      this.lastError = null;
       return result;
-    } catch {
-      // Embedding failure is non-fatal — Tier 1 keyword search continues
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : 'Embedding request failed';
       return null;
     }
   }
 
-  /**
-   * Sync embedding lookup from cache.
-   * Returns cached result or null if not cached.
-   * Use embed() first to populate the cache.
-   */
   embedSync(text: string): EmbeddingResult | null {
-    return this._cache.get(text) ?? null;
+    return this.cache.get(this.cacheKey(text)) ?? null;
   }
 
-  /** Batch embed multiple texts (concurrency limited: 3) */
+  private cacheKey(text: string): string {
+    return createHash('sha256').update(text).digest('hex');
+  }
+
   async embedBatch(texts: readonly string[]): Promise<(EmbeddingResult | null)[]> {
-    if (!this._available) return texts.map(() => null);
-    const results: (EmbeddingResult | null)[] = new Array(texts.length).fill(null);
-    const CONCURRENCY = 3;
-    for (let i = 0; i < texts.length; i += CONCURRENCY) {
-      const batch = texts.slice(i, i + CONCURRENCY);
-      const batchResults = await Promise.all(batch.map((t) => this.embed(t)));
-      for (let j = 0; j < batchResults.length; j++) {
-        results[i + j] = batchResults[j];
-      }
+    const results: (EmbeddingResult | null)[] = [];
+    for (let index = 0; index < texts.length; index += BATCH_CONCURRENCY) {
+      results.push(...await Promise.all(texts.slice(index, index + BATCH_CONCURRENCY).map(text => this.embed(text))));
     }
     return results;
   }
 
-  /** Call API based on provider */
-  private async callApi(text: string): Promise<readonly number[]> {
-    const { provider, model, endpoint } = this.config!;
-
-    switch (provider) {
-      case 'ollama':
-        return this.callOllama(endpoint!, model, text);
-      case 'openai':
-        return this.callOpenAI(endpoint!, model, text);
-      default:
-        // anthropic 등 미지원 provider → ollama 방식으로 시도
-        return this.callOllama(endpoint!, model, text);
-    }
-  }
-
-  /** Ollama: POST /api/embeddings */
-  private async callOllama(endpoint: string, model: string, text: string): Promise<readonly number[]> {
-    const url = endpoint.replace(/\/$/, '') + '/api/embeddings';
+  private async callApi(text: string): Promise<unknown> {
+    const { provider, model, endpoint, apiKey, timeoutMs = 10000 } = this.config!;
+    const url = httpUrl(endpoint!);
+    const base = url.pathname.replace(/\/+$/, '');
+    const openai = provider === 'openai';
+    url.pathname = openai
+      ? `${base.endsWith('/v1') ? base : `${base}/v1`}/embeddings`
+      : `${base.endsWith('/api') ? base : `${base}/api`}/embeddings`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: text }),
-      signal: AbortSignal.timeout(10000), // 10s timeout
+      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify(openai ? { model, input: text, encoding_format: 'float' } : { model, prompt: text }),
     });
-
     if (!response.ok) {
-      throw new Error(`Ollama embedding failed: ${response.status}`);
+      await response.body?.cancel();
+      throw new Error(`Embedding request failed with HTTP ${response.status}`);
     }
-
-    const data = await response.json() as { embedding: number[] };
-    return data.embedding;
-  }
-
-  /** OpenAI-compatible: POST /v1/embeddings */
-  private async callOpenAI(endpoint: string, model: string, text: string): Promise<readonly number[]> {
-    const url = endpoint.replace(/\/$/, '') + '/v1/embeddings';
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input: text }),
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI embedding failed: ${response.status}`);
-    }
-
-    const data = await response.json() as { data: Array<{ embedding: number[] }> };
-    return data.data[0].embedding;
+    const data = JSON.parse(await readResponseText(response, MAX_RESPONSE_BYTES));
+    return openai ? data.data?.[0]?.embedding : data.embedding;
   }
 }

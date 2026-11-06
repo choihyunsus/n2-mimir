@@ -22,7 +22,7 @@ describe('Simulation 1: E2E Pipeline', () => {
   it('should complete full lifecycle: add → recall → overlay → digest', async () => {
     // Step 1: Add failure experience (addExperience returns void)
     mimir.addExperience({
-      agent: 'rose', project: 'n2-mimir', type: 'failure',
+      agent: 'worker', project: 'n2-mimir', type: 'failure',
       category: 'coding_pattern', severity: 'error',
       context: 'PowerShell terminal scripting',
       action: 'Used && operator to chain commands',
@@ -32,7 +32,7 @@ describe('Simulation 1: E2E Pipeline', () => {
 
     // Step 2: Add success experience (same category)
     mimir.addExperience({
-      agent: 'rose', project: 'n2-mimir', type: 'success',
+      agent: 'worker', project: 'n2-mimir', type: 'success',
       category: 'coding_pattern', severity: 'info',
       context: 'PowerShell terminal scripting',
       action: 'Used semicolon to chain commands',
@@ -51,12 +51,12 @@ describe('Simulation 1: E2E Pipeline', () => {
     expect(totalFound).toBeGreaterThanOrEqual(1);
 
     // Step 4: Generate overlay
-    const overlayResult = mimir.overlay('PowerShell', 'n2-mimir', 'rose');
+    const overlayResult = mimir.overlay('PowerShell', 'n2-mimir', 'worker');
     expect(overlayResult).toBeDefined();
     expect(overlayResult.totalTokens).toBeGreaterThanOrEqual(0);
 
     // Step 5: Digest (analyze patterns + generate insights)
-    const digestResult = await mimir.digest({ project: 'n2-mimir', agent: 'rose' });
+    const digestResult = await mimir.digest({ project: 'n2-mimir', agent: 'worker' });
     expect(digestResult).toBeDefined();
     // With success+failure pair, should find contrast pairs
     expect(digestResult.contrasts).toBeGreaterThanOrEqual(1);
@@ -69,7 +69,7 @@ describe('Simulation 1: E2E Pipeline', () => {
   it('should handle delta learning (upsert)', () => {
     // First insert
     const result1 = mimir.deltaLearn({
-      agent: 'rose', project: 'test', type: 'pattern',
+      agent: 'worker', project: 'test', type: 'pattern',
       category: 'workflow', context: 'test',
       action: 'Always run typecheck before build',
       outcome: 'Catches errors early',
@@ -78,10 +78,10 @@ describe('Simulation 1: E2E Pipeline', () => {
 
     // Second insert with same action — should upsert
     const result2 = mimir.deltaLearn({
-      agent: 'rose', project: 'test', type: 'pattern',
+      agent: 'worker', project: 'test', type: 'pattern',
       category: 'workflow', context: 'test',
       action: 'Always run typecheck before build',
-      outcome: 'Catches errors early again',
+      outcome: 'Catches errors early',
     });
     expect(result2.isNew).toBe(false);
     expect(result2.id).toBe(result1.id);
@@ -93,12 +93,12 @@ describe('Simulation 1: E2E Pipeline', () => {
 
   it('should handle multiple projects independently', () => {
     mimir.addExperience({
-      agent: 'rose', project: 'projectA', type: 'success',
+      agent: 'worker', project: 'projectA', type: 'success',
       category: 'coding_pattern', context: 'A ctx',
       action: 'action in project A', outcome: 'result in A',
     });
     mimir.addExperience({
-      agent: 'rose', project: 'projectB', type: 'failure',
+      agent: 'worker', project: 'projectB', type: 'failure',
       category: 'coding_pattern', context: 'B ctx',
       action: 'action in project B', outcome: 'result in B',
     });

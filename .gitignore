@@ -8,7 +8,6 @@ dist-cjs/
 
 # Rust build
 packages/core/target/
-packages/core/Cargo.lock
 
 # Runtime data
 backups/
@@ -47,3 +46,8 @@ PLAN.md
 task.md
 walkthrough.md
 implementation_plan.md
+
+# Machine-specific native artifacts
+*.node
+*.db-shm
+*.tgz

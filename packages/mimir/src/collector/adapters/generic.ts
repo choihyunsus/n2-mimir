@@ -1,27 +1,34 @@
-// Generic adapter — direct experience injection (API-driven)
+// In-memory observations are retained until the consumer acknowledges storage.
 import type { ExperienceAdapter, RawExperience } from '../../types.js';
+import { randomUUID } from 'node:crypto';
+import { isRawExperience } from '../normalizer.js';
 
-/**
- * Generic adapter: holds manually injected experiences.
- * Used when experiences are provided directly via the Mimir API
- * rather than collected from external data sources.
- */
+const MAX_BUFFERED_EXPERIENCES = 10000;
+
 export class GenericAdapter implements ExperienceAdapter {
-  private readonly buffer: RawExperience[] = [];
+  private buffer: RawExperience[] = [];
 
-  /** Add an experience to the buffer for next collection */
   push(experience: RawExperience): void {
-    this.buffer.push(experience);
+    this.pushBatch([experience]);
   }
 
-  /** Add multiple experiences */
   pushBatch(experiences: ReadonlyArray<RawExperience>): void {
-    this.buffer.push(...experiences);
+    if (this.buffer.length + experiences.length > MAX_BUFFERED_EXPERIENCES) {
+      throw new Error('GenericAdapter buffer is full');
+    }
+    if (!experiences.every(isRawExperience)) throw new Error('Invalid raw experience');
+    this.buffer.push(...experiences.map(experience => Object.freeze({ ...experience,
+      sourceRef: experience.sourceRef || `generic:${randomUUID()}` })));
   }
 
-  async collect(_project: string, _agent: string): Promise<ReadonlyArray<RawExperience>> {
-    const collected = [...this.buffer];
-    this.buffer.length = 0;
-    return collected;
+  async collect(project: string, agent: string): Promise<ReadonlyArray<RawExperience>> {
+    return this.buffer.filter(experience =>
+      (experience.project === undefined || experience.project === project) &&
+      (experience.agent === undefined || experience.agent === agent));
+  }
+
+  acknowledge(experiences: ReadonlyArray<RawExperience>): void {
+    const acknowledged = new Set(experiences);
+    this.buffer = this.buffer.filter(experience => !acknowledged.has(experience));
   }
 }

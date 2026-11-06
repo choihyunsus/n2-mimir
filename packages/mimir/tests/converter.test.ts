@@ -1,15 +1,13 @@
 // converter/overlay — overlay generation + token budget tests
 import { describe, it, expect } from 'vitest';
 import { generateOverlay } from '../src/converter/overlay.js';
-import { toArkRule } from '../src/converter/ark.js';
-import { toClothoWorkflow } from '../src/converter/clotho.js';
 import type { Insight } from '../src/types.js';
 
 function makeInsight(overrides: Partial<Insight> = {}): Insight {
   return {
     id: Math.random().toString(36).slice(2),
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    agent: 'rose', description: 'test insight description', compressed: 'test compressed',
+    agent: 'worker', description: 'test insight description', compressed: 'test compressed',
     tokenCost: 5, category: 'coding', scope: 'project', importance: 3,
     confidence: 0.8, effectScore: 0.5, status: 'active',
     ...overrides,
@@ -53,17 +51,5 @@ describe('overlay', () => {
     const insights = [makeInsight({ importance: 2, compressed: 'normal' })];
     const result = generateOverlay(insights);
     expect(result).toContain('💡');
-  });
-});
-
-describe('ark (skeleton)', () => {
-  it('should return null (Phase 4)', () => {
-    expect(toArkRule(makeInsight())).toBeNull();
-  });
-});
-
-describe('clotho (skeleton)', () => {
-  it('should return null (Phase 4)', () => {
-    expect(toClothoWorkflow(makeInsight())).toBeNull();
   });
 });

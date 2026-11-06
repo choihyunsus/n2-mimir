@@ -15,7 +15,7 @@ export function detectRepeatedPatterns(
 
   for (const exp of experiences) {
     if (exp.type !== 'failure' && exp.type !== 'correction') continue;
-    const key = `${exp.category}::${normalizeAction(exp.action)}`;
+    const key = JSON.stringify([exp.project, exp.agent, exp.category, normalizeAction(exp.action)]);
     const group = groups.get(key) ?? [];
     group.push(exp);
     groups.set(key, group);
@@ -23,11 +23,10 @@ export function detectRepeatedPatterns(
 
   const patterns: RepeatedPattern[] = [];
 
-  for (const [key, exps] of groups) {
+  for (const exps of groups.values()) {
     if (exps.length >= minCount) {
-      const [category] = key.split('::');
       patterns.push({
-        category,
+        category: exps[0].category,
         action: exps[0].action,
         count: exps.length,
         experiences: exps,

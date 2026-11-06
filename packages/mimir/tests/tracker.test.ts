@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MimirDatabase } from '../src/store/database.js';
 import { trackEffect, evaluateGraduation } from '../src/tracker/scorer.js';
 import { existsSync, unlinkSync } from 'fs';
+import Sqlite from 'better-sqlite3';
 
 const TEST_DB = './test-tracker.db';
 
@@ -20,6 +21,33 @@ describe('tracker', () => {
   });
 
   describe('trackEffect', () => {
+    it('applies a session once and rejects a conflicting replay', () => {
+      const insight = db.insertInsight({ agent: 'a', description: 'd', compressed: 'c', category: 'c' });
+      const measurement = { insightId: insight.id, sessionId: 'stable', wasRelevant: true,
+        wasFollowed: true, outcome: 'positive' as const };
+      trackEffect(db, measurement);
+      trackEffect(db, measurement);
+      expect(db.getInsight(insight.id)!.importance).toBe(3);
+      expect(() => trackEffect(db, { ...measurement, outcome: 'negative' })).toThrow(/Conflicting/);
+      expect(db.getInsight(insight.id)!.effectScore).toBe(1);
+      expect(() => trackEffect(db, { ...measurement, sessionId: '' })).toThrow();
+    });
+
+    it('rolls back the observation when voting fails and permits a complete retry', () => {
+      const insight = db.insertInsight({ agent: 'a', description: 'd', compressed: 'c', category: 'c' });
+      const measurement = { insightId: insight.id, sessionId: 'retry', wasRelevant: true,
+        wasFollowed: true, outcome: 'positive' as const };
+      const sql = new Sqlite(TEST_DB);
+      try {
+        sql.exec("CREATE TRIGGER fail_vote BEFORE UPDATE OF importance ON insights BEGIN SELECT RAISE(ABORT, 'injected failure'); END");
+        expect(() => trackEffect(db, measurement)).toThrow(/injected failure/);
+        expect(sql.prepare('SELECT COUNT(*) AS count FROM effect_tracking').get()).toEqual({ count: 0 });
+        sql.exec('DROP TRIGGER fail_vote');
+        trackEffect(db, measurement);
+        expect(db.getInsight(insight.id)!.importance).toBe(3);
+      } finally { sql.close(); }
+    });
+
     it('should auto-upvote on positive followed outcome', () => {
       const insight = db.insertInsight({ agent: 'a', description: 'd', compressed: 'c', category: 'c' });
       trackEffect(db, { insightId: insight.id, sessionId: 's1', wasRelevant: true, wasFollowed: true, outcome: 'positive' });

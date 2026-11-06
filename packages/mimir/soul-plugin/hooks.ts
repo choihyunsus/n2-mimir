@@ -2,6 +2,7 @@
 // n2_boot → activate() | n2_work_end → digest()
 
 import { Mimir } from 'n2-mimir';
+import { createHash } from 'node:crypto';
 import type { MimirConfig, AssemblyResult } from 'n2-mimir';
 
 /**
@@ -40,7 +41,7 @@ export class SoulPlugin {
     const result = this.mimir.recall(topic, project, agent);
 
     // If custom budget, use assembler directly
-    if (tokenBudget) {
+    if (tokenBudget !== undefined) {
       const { assemble } = await import('n2-mimir');
       return assemble(result, tokenBudget);
     }
@@ -98,6 +99,7 @@ export class SoulPlugin {
 
 /** Session data from n2_work_end */
 export interface SessionData {
+  readonly sessionId?: string;
   readonly summary: string;
   readonly decisions?: ReadonlyArray<string>;
   readonly todo?: ReadonlyArray<string>;
@@ -124,6 +126,7 @@ function convertSessionToExperiences(
   data: SessionData,
 ): Array<import('n2-mimir').ExperienceInput> {
   const experiences: Array<import('n2-mimir').ExperienceInput> = [];
+  const sessionId = data.sessionId ?? createHash('sha256').update(JSON.stringify(data)).digest('hex');
 
   // Summary → pattern experience
   if (data.summary) {
@@ -134,42 +137,42 @@ function convertSessionToExperiences(
       category: 'workflow',
       context: `Session work on ${project}`,
       action: data.summary.slice(0, 500),
-      outcome: 'Session completed',
-      sessionId: new Date().toISOString(),
+      outcome: 'Session report recorded',
+      sessionId,
     });
   }
 
-  // Decisions → success experiences
+  // Decisions retain their reported status
   if (data.decisions) {
     for (const decision of data.decisions) {
       experiences.push({
         agent,
         project,
-        type: 'success',
+        type: 'pattern',
         category: 'architecture',
         context: `Decision made during ${project} session`,
         action: decision.slice(0, 500),
-        outcome: 'Decision applied',
-        sessionId: new Date().toISOString(),
+        outcome: 'Decision reported',
+        sessionId,
       });
     }
   }
 
-  // Files created → success experiences
-  if (data.filesCreated) {
-    for (const file of data.filesCreated) {
+  // File reports retain their reported status
+  if (data.filesCreated || data.filesModified) {
+    for (const file of [...(data.filesCreated ?? []), ...(data.filesModified ?? [])]) {
       experiences.push({
         agent,
         project,
-        type: 'success',
+        type: 'pattern',
         category: 'coding_pattern',
-        context: `Created file in ${project}`,
-        action: `Created ${file.path}`,
+        context: `Reported file change in ${project}`,
+        action: `File change ${file.path}`,
         outcome: file.desc,
-        sessionId: new Date().toISOString(),
+        sessionId,
       });
     }
   }
 
-  return experiences;
+  return experiences.map((experience, index) => ({ ...experience, sourceRef: `soul-session:${sessionId}:${index}` }));
 }

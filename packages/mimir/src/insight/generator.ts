@@ -11,6 +11,7 @@ export function generateFromContrasts(
   const operations: InsightOperation[] = [];
 
   for (const pair of pairs) {
+    if (pair.failure.agent !== pair.success.agent || pair.failure.project !== pair.success.project) continue;
     const description = [
       `[${pair.category}] `,
       `실패: ${truncate(pair.failure.action, 80)} → ${truncate(pair.failure.outcome, 80)}`,
@@ -24,6 +25,8 @@ export function generateFromContrasts(
 
     const insight: InsightInput = {
       agent: pair.failure.agent,
+      project: pair.failure.project,
+      sourceIds: [pair.failure.id, pair.success.id],
       description,
       compressed,
       category: pair.category,
@@ -47,11 +50,14 @@ export function generateFromPatterns(
 
   for (const pattern of patterns) {
     const latest = pattern.experiences[0];
+    if (pattern.experiences.some(item => item.agent !== latest.agent || item.project !== latest.project)) continue;
     const description = `[${pattern.category}] 반복 실패 (${pattern.count}회): ${truncate(pattern.action, 100)}`;
     const compressed = `⚠️ ${pattern.category}: "${truncate(pattern.action, 80)}" — ${pattern.count}회 반복 실패`;
 
     const insight: InsightInput = {
       agent: latest.agent,
+      project: latest.project,
+      sourceIds: [...new Set(pattern.experiences.map(item => item.id))],
       description,
       compressed,
       category: pattern.category,

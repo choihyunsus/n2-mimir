@@ -72,11 +72,11 @@ describe('normalizer', () => {
         action: 'deployment build failed with error',
         outcome: 'deployment crashed',
         agent: 'jisoo',
-        project: 'n2-browser',
+        project: 'demo-project',
       };
       const result = normalize(raw);
       expect(result!.agent).toBe('jisoo');
-      expect(result!.project).toBe('n2-browser');
+      expect(result!.project).toBe('demo-project');
     });
 
     it('should default agent to unknown and project to default', () => {

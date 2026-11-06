@@ -3,7 +3,7 @@
 
 import type { MimirDatabase } from '../store/database.js';
 import type { Embedder } from './embedder.js';
-import type { ExperienceEntry, Insight } from '../types.js';
+import type { ExperienceEntry, Insight, MemoryScope } from '../types.js';
 import { cosineSimilarity } from '../utils/math.js';
 
 /** Semantic search result */
@@ -22,6 +22,7 @@ export async function semanticSearch(
   embedder: Embedder,
   query: string,
   limit = 10,
+  scope: MemoryScope = {},
 ): Promise<readonly SemanticResult[]> {
   if (!embedder.isAvailable()) return [];
 
@@ -34,6 +35,15 @@ export async function semanticSearch(
   if (allEmbeddings.length === 0) return [];
 
   const results: SemanticResult[] = allEmbeddings
+    .filter(embedding => {
+      if (embedding.model !== queryEmbedding.model) return false;
+      if (embedding.sourceType === 'insight') {
+        return db.queryInsights({ ...scope, id: embedding.sourceId, limit: 1 }).length === 1;
+      }
+      const experience = db.getExperience(embedding.sourceId);
+      return !!experience && (scope.project === undefined || experience.project === scope.project)
+        && (scope.agent === undefined || experience.agent === scope.agent);
+    })
     .map((emb) => ({
       sourceType: emb.sourceType as 'experience' | 'insight',
       sourceId: emb.sourceId,
@@ -57,14 +67,14 @@ export async function embedAndStore(
   sourceId: string,
   text: string,
 ): Promise<boolean> {
-  if (!embedder.isAvailable()) return false;
+  if (!embedder.isAvailable() || db.isClosed) return false;
 
   // Check if embedding already exists
   const existing = db.getEmbedding(sourceType, sourceId);
   if (existing) return false;
 
   const result = await embedder.embed(text);
-  if (!result) return false;
+  if (!result || db.isClosed) return false;
 
   db.storeEmbedding(sourceType, sourceId, result.vector, result.model);
   return true;

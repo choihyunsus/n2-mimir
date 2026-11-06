@@ -124,7 +124,7 @@ describe('Simulation 2: FallbackStore Direct Verification', () => {
 
     const r2 = store.upsertExperience({
       agent: 'a', project: 'p', type: 'pattern', category: 'workflow',
-      context: 'c', action: 'run typecheck', outcome: 'catches errors again',
+      context: 'c', action: 'run typecheck', outcome: 'catches errors',
     });
     expect(r2.isNew).toBe(false);
     expect(r2.id).toBe(r1.id);
@@ -152,7 +152,7 @@ describe('Simulation 2: FallbackStore Direct Verification', () => {
 
   it('should handle full insight lifecycle: create → upvote → downvote → retire', () => {
     const insight = store.insertInsight({
-      agent: 'rose', description: 'Always use ; in PowerShell',
+      agent: 'worker', description: 'Always use ; in PowerShell',
       compressed: '; not &&', category: 'coding_pattern',
     });
     expect(insight.importance).toBe(2); // default
