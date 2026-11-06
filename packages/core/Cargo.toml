@@ -1,7 +1,7 @@
 # n2-mimir-core — Rust core engine for n2-Mímir experience system
 [package]
 name = "n2-mimir-core"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 rust-version = "1.98"
 description = "High-performance experience engine core: SQLite, FTS5, SIMD vector ops"
@@ -17,7 +17,7 @@ napi = { version = "2", default-features = false, features = ["napi8", "serde-js
 napi-derive = "2"
 
 # SQLite: zero-copy, embedded database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

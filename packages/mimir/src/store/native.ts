@@ -7,10 +7,12 @@
 import { join } from 'path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { isSupportedSqliteVersion } from './sqlite-version.js';
 
 // napi-rs native binding interface (matches lib.rs exports)
 export interface NativeBinding {
   apiVersion(): number;
+  sqliteVersion(): string;
   executeSql(handle: number, sql: string, valuesJson: string): number;
   querySql(handle: number, sql: string, valuesJson: string): string;
   openDatabase(dbPath: string): number;
@@ -85,7 +87,8 @@ let _native: NativeBinding | null | undefined;
 export function getNativeBinding(): NativeBinding | null {
   if (_native === undefined) {
     const candidate = tryLoadNative();
-    _native = candidate?.apiVersion?.() === 3 ? candidate : null;
+    _native = candidate?.apiVersion?.() === 3 && typeof candidate.sqliteVersion === 'function' &&
+      isSupportedSqliteVersion(candidate.sqliteVersion()) ? candidate : null;
   }
   return _native;
 }

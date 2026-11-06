@@ -24,6 +24,12 @@ pub fn api_version() -> u32 {
     3
 }
 
+/// Report the actual bundled SQLite engine, independently of package metadata.
+#[napi]
+pub fn sqlite_version() -> String {
+    rusqlite::version().to_string()
+}
+
 /// Read stored embedding vectors together with their actual model identifiers.
 #[napi]
 pub fn get_all_embeddings(handle: i64) -> Result<String> {

@@ -1,15 +1,19 @@
-# n2-mimir 3.0
+# n2-mimir 3.0.1
 
 A local experience-learning library for AI agents. Mimir stores observations, derives reviewable insights, recalls relevant evidence, and records how those insights performed.
 
 [한국어 안내](README.ko.md)
 
+## SQLite runtime update
+
+Version 3.0.1 upgrades the optional Rust engine to SQLite 3.54.1 and requires SQLite 3.51.3 or later at runtime. Install a current `better-sqlite3` 12.x driver. The minimum includes the upstream WAL-reset data-integrity fix. A deterministic isolated test reproduced data loss in the old native engine and verified committed-data preservation in both replacements. [SQLite release details](https://www.sqlite.org/releaselog/3_51_3.html)
+
 ## Install
 
-Download `n2-mimir-3.0.0.tgz` from the GitHub release and install it with a supported SQLite driver.
+Download `n2-mimir-3.0.1.tgz` from the GitHub release and install it with a supported SQLite driver.
 
 ```sh
-npm install ./n2-mimir-3.0.0.tgz better-sqlite3
+npm install ./n2-mimir-3.0.1.tgz better-sqlite3@^12.8.0
 ```
 
 Node.js 20.3 or later is required. Release checks run on Windows with Node.js 24.13. Both ESM and CommonJS exports include TypeScript declarations. The package uses `better-sqlite3` by default. An optional locally built Rust addon uses the same SQLite schema.

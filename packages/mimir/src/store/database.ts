@@ -22,6 +22,7 @@ import { StudyStore } from '../learning/study.js';
 import { MaintenanceStore } from '../learning/maintenance.js';
 import { sanitizeFtsQuery, validateReadLimit } from './fts.js';
 import { experienceInput, validateInsightInput } from './validate.js';
+import { assertSupportedSqliteVersion } from './sqlite-version.js';
 
 const DEFAULT_RECALL_LIMIT = 20;
 
@@ -57,7 +58,11 @@ export class MimirDatabase {
     } else {
       this.nativeHandle = null;
       const connection = this.loadBetterSqlite3(dbPath);
-      try { this.fallback = new FallbackStore(connection); }
+      try {
+        const version = connection.prepare('SELECT sqlite_version() AS version').get() as { version: string };
+        assertSupportedSqliteVersion(version.version);
+        this.fallback = new FallbackStore(connection);
+      }
       catch (error) { connection.close(); throw error; }
       this.mode = 'fallback';
     }
@@ -98,6 +103,11 @@ export class MimirDatabase {
   /** Get current engine mode */
   getMode(): 'rust' | 'fallback' {
     return this.mode;
+  }
+
+  getSqliteVersion(): string {
+    if (this.native) return this.native.sqliteVersion();
+    return (this.fallback!.db.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version;
   }
 
   // === Experience CRUD ===

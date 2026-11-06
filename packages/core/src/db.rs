@@ -19,6 +19,9 @@ lazy_static::lazy_static! {
 
 /// Open or create a Mímir database. Returns a handle ID.
 pub fn open(db_path: &str) -> Result<i64, Box<dyn std::error::Error>> {
+    if rusqlite::version_number() < 3_051_003 {
+        return Err("SQLite 3.51.3 or later is required for WAL-reset fixes".into());
+    }
     let mut conn = Connection::open(db_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;

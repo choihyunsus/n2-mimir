@@ -45,7 +45,6 @@ pub fn query_sql(handle: i64, sql: String, values: String) -> Result<String> {
         }
         let columns: Vec<String> = statement
             .column_names()
-            .iter()
             .map(|name| name.to_string())
             .collect();
         let rows = statement
