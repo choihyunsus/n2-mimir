@@ -86,7 +86,7 @@ export class Embedder {
       body: JSON.stringify(openai ? { model, input: text, encoding_format: 'float' } : { model, prompt: text }),
     });
     if (!response.ok) {
-      await response.body?.cancel();
+      void response.body?.cancel().catch(() => undefined);
       throw new Error(`Embedding request failed with HTTP ${response.status}`);
     }
     const data = JSON.parse(await readResponseText(response, MAX_RESPONSE_BYTES));

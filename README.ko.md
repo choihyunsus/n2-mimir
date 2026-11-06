@@ -1,4 +1,6 @@
-# n2-mimir 3.0.1
+# n2-mimir 3.0.2
+
+3.0.2는 HTTP 응답 정리 중 취소가 끝나지 않으면 요청 자체가 멈추던 문제를 수정합니다. 응답 크기 제한 오류를 즉시 반환하고 스트림 잠금을 해제합니다. 실패한 HTTP 응답도 같은 방식으로 정리하며, 공개 TypeScript 선언에 필요한 SQLite 타입 의존성을 포함합니다.
 
 AI 에이전트의 경험을 SQLite에 저장하고, 근거가 있는 통찰을 만들고, 현재 작업에 관련된 기록을 회상하는 라이브러리입니다.
 
@@ -10,10 +12,10 @@ AI 에이전트의 경험을 SQLite에 저장하고, 근거가 있는 통찰을 
 
 ## 설치
 
-GitHub 릴리스의 `n2-mimir-3.0.1.tgz`를 내려받아 설치합니다.
+GitHub 릴리스의 `n2-mimir-3.0.2.tgz`를 내려받아 설치합니다.
 
 ```sh
-npm install ./n2-mimir-3.0.1.tgz better-sqlite3@^12.8.0
+npm install ./n2-mimir-3.0.2.tgz better-sqlite3@^12.8.0
 ```
 
 Node.js 20.3 이상을 사용합니다. 이번 배포 검증 환경은 Windows와 Node.js 24.13입니다. ESM과 CommonJS, 두 형식의 TypeScript 선언을 제공합니다. 기본 저장 엔진은 `better-sqlite3`이며, 로컬에서 빌드한 Rust 애드온도 같은 DB 구조를 사용합니다.

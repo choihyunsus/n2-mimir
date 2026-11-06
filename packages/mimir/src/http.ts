@@ -14,7 +14,8 @@ export async function readResponseText(response: Response, maxBytes = 2 * 1024 *
     }
     return Buffer.concat(chunks, length).toString('utf8');
   } finally {
-    await reader.cancel().catch(() => undefined);
+    // A stalled transport cancellation must not delay the completed read or error.
+    void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

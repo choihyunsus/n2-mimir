@@ -26,7 +26,7 @@ export async function crawlPage(
 
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok || !contentType.includes('text/html')) {
-      await response.body?.cancel();
+      void response.body?.cancel().catch(() => undefined);
       return null;
     }
 

@@ -2,6 +2,8 @@ import { it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { Embedder } from '../src/semantic/embedder.js';
 import { crawlPage } from '../src/search/crawler.js';
+import { readResponseText } from '../src/http.js';
+import { search } from '../src/search/engine.js';
 
 let server: Server;
 let endpoint: string;
@@ -75,3 +77,31 @@ it('aborts slow response bodies and bounds downloaded page bytes', async () => {
   expect(await crawlPage(endpoint + '/large')).toBeNull();
   expect(await crawlPage('file:///unused')).toBeNull();
 });
+
+it('reports byte limits even when a transport never finishes cancellation', async () => {
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array(2)); },
+    cancel() { return new Promise<void>(() => {}); },
+  }));
+  await expect(readResponseText(response, 1)).rejects.toThrow('HTTP response exceeds byte limit');
+  expect(response.body?.locked).toBe(false);
+}, 1000);
+
+it('returns failed requests and rejected content types without awaiting transport cancellation', async () => {
+  const original = globalThis.fetch;
+  let cancellations = 0;
+  const response = (status: number, contentType = 'text/html') => new Response(new ReadableStream({
+    cancel() { cancellations++; return new Promise<void>(() => {}); },
+  }), { status, headers: { 'content-type': contentType } });
+  try {
+    globalThis.fetch = async () => response(503);
+    expect(await crawlPage('http://fixture.invalid/page')).toBeNull();
+    expect(await search('fixture', { timeRange: 'y' })).toEqual([]);
+    const client = new Embedder({ provider: 'openai', model: 'fixture', endpoint: 'http://fixture.invalid' });
+    expect(await client.embed('fixture')).toBeNull();
+    expect(client.getLastError()).toContain('HTTP 503');
+    globalThis.fetch = async () => response(200, 'application/octet-stream');
+    expect(await crawlPage('http://fixture.invalid/page')).toBeNull();
+    expect(cancellations).toBe(4);
+  } finally { globalThis.fetch = original; }
+}, 1000);

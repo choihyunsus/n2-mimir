@@ -1,6 +1,6 @@
 {
   "name": "n2-mimir",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "Experience learning engine — memories become experience, experience changes behavior",
   "type": "module",
   "main": "dist/index.js",
@@ -50,7 +50,6 @@
     "better-sqlite3": "^12.8.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
     "rimraf": "^6.0.0",
     "tsup": "^9.0.0",
     "typescript": "^5.5.0",
@@ -71,5 +70,8 @@
   },
   "engines": {
     "node": ">=20.3.0"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "^7.6.0"
   }
 }

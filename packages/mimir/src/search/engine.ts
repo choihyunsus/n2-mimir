@@ -44,7 +44,7 @@ export async function search(
     }, cfg.timeout);
 
     if (!response.ok) {
-      await response.body?.cancel();
+      void response.body?.cancel().catch(() => undefined);
       continue; // Silent failure — expand to next date range
     }
 
