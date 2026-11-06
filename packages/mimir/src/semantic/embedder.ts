@@ -81,15 +81,16 @@ export class Embedder {
       : `${base.endsWith('/api') ? base : `${base}/api`}/embeddings`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const signal = AbortSignal.timeout(timeoutMs);
     const response = await fetch(url, {
-      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+      method: 'POST', headers, redirect: 'error', signal,
       body: JSON.stringify(openai ? { model, input: text, encoding_format: 'float' } : { model, prompt: text }),
     });
     if (!response.ok) {
       void response.body?.cancel().catch(() => undefined);
       throw new Error(`Embedding request failed with HTTP ${response.status}`);
     }
-    const data = JSON.parse(await readResponseText(response, MAX_RESPONSE_BYTES));
+    const data = JSON.parse(await readResponseText(response, MAX_RESPONSE_BYTES, signal));
     return openai ? data.data?.[0]?.embedding : data.embedding;
   }
 }

@@ -16,7 +16,9 @@ export async function crawlPage(
   const cfg = resolveSearchConfig(config);
 
   try {
+    const signal = AbortSignal.timeout(cfg.timeout);
     const response = await fetchWithTimeout(url, {
+      signal,
       headers: {
         'User-Agent': cfg.userAgent,
         'Accept': 'text/html',
@@ -30,7 +32,7 @@ export async function crawlPage(
       return null;
     }
 
-    const html = await readResponseText(response);
+    const html = await readResponseText(response, undefined, signal);
     const title = extractTitle(html);
     const content = extractContent(html, cfg.maxContentLength);
 

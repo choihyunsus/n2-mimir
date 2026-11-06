@@ -1,6 +1,6 @@
 {
   "name": "n2-mimir-monorepo",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "private": true,
   "description": "n2-Mímir — AI Experience Learning Engine",
   "workspaces": [

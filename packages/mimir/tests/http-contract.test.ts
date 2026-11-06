@@ -105,3 +105,20 @@ it('returns failed requests and rejected content types without awaiting transpor
     expect(cancellations).toBe(4);
   } finally { globalThis.fetch = original; }
 }, 1000);
+
+it('enforces body deadlines independently of transport abort propagation', async () => {
+  const original = globalThis.fetch;
+  let cancelled = 0;
+  try {
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
+      cancel() { cancelled++; return new Promise<void>(() => {}); },
+    }), { headers: { 'content-type': 'text/html' } });
+    const client = new Embedder({ provider: 'openai', model: 'fixture', endpoint: 'http://fixture.invalid', timeoutMs: 30 });
+    expect(await client.embed('fixture')).toBeNull();
+    expect(client.getLastError()).toMatch(/timeout|aborted/i);
+    expect(await crawlPage('http://fixture.invalid', { timeout: 30 })).toBeNull();
+    await expect(search('fixture', { timeout: 30 })).rejects.toThrow(/timeout|aborted/i);
+    expect(cancelled).toBe(3);
+  } finally { globalThis.fetch = original; }
+}, 1000);

@@ -1,10 +1,12 @@
-# n2-mimir 3.0.2
+# n2-mimir 3.0.3
+
+Version 3.0.3 explicitly enforces the deadline throughout response body reads, including transports that fail to propagate cancellation after headers arrive.
 
 Version 3.0.2 fixes a stalled HTTP cancellation that could prevent a completed read or response-size error from returning. Stream cleanup releases the reader without waiting for the transport cancellation to settle. Failed HTTP responses follow the same bounded cleanup path. The package also includes the SQLite type dependency required by its public TypeScript declarations.
 
 A local experience-learning library for AI agents. Mimir stores observations, derives reviewable insights, recalls relevant evidence, and records how those insights performed.
 
-[한국어 안내](https://github.com/choihyunsus/n2-mimir/blob/v3.0.2/README.ko.md)
+[한국어 안내](https://github.com/choihyunsus/n2-mimir/blob/v3.0.3/README.ko.md)
 
 ## SQLite runtime update
 
@@ -12,10 +14,10 @@ Version 3.0.1 upgrades the optional Rust engine to SQLite 3.54.1 and requires SQ
 
 ## Install
 
-Download `n2-mimir-3.0.2.tgz` from the GitHub release and install it with a supported SQLite driver.
+Download `n2-mimir-3.0.3.tgz` from the GitHub release and install it with a supported SQLite driver.
 
 ```sh
-npm install ./n2-mimir-3.0.2.tgz better-sqlite3@^12.8.0
+npm install ./n2-mimir-3.0.3.tgz better-sqlite3@^12.8.0
 ```
 
 Node.js 20.3 or later is required. Release checks run on Windows with Node.js 24.13. Both ESM and CommonJS exports include TypeScript declarations. The package uses `better-sqlite3` by default. An optional locally built Rust addon uses the same SQLite schema.
@@ -131,7 +133,7 @@ npm run build:native
 npm run test:rust
 ```
 
-Development tools require Node.js 22.18 or later. Rust builds require Rust 1.98 and platform C/C++ build tools. `build:native` creates a machine-specific addon for local development. Release archives contain the portable JavaScript build. See the [feature and verification map](https://github.com/choihyunsus/n2-mimir/blob/v3.0.2/docs/FEATURES.md) for test scope and integration boundaries.
+Development tools require Node.js 22.18 or later. Rust builds require Rust 1.98 and platform C/C++ build tools. `build:native` creates a machine-specific addon for local development. Release archives contain the portable JavaScript build. See the [feature and verification map](https://github.com/choihyunsus/n2-mimir/blob/v3.0.3/docs/FEATURES.md) for test scope and integration boundaries.
 
 ## License
 

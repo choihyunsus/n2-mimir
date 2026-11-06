@@ -34,8 +34,10 @@ export async function search(
   for (const range of cascade) {
     const dateFilter = buildDateFilter(range);
     const url = `https://html.duckduckgo.com/html/?q=${encodedQuery}${dateFilter}`;
+    const signal = AbortSignal.timeout(cfg.timeout);
 
     const response = await fetchWithTimeout(url, {
+      signal,
       headers: {
         'User-Agent': cfg.userAgent,
         'Accept': 'text/html',
@@ -48,7 +50,7 @@ export async function search(
       continue; // Silent failure — expand to next date range
     }
 
-    const html = await readResponseText(response);
+    const html = await readResponseText(response, undefined, signal);
     const results = parseSearchResults(html, cfg.maxResults);
 
     if (results.length > 0) return results;

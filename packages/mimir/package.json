@@ -1,6 +1,6 @@
 {
   "name": "n2-mimir",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Experience learning engine — memories become experience, experience changes behavior",
   "type": "module",
   "main": "dist/index.js",
