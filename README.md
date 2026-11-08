@@ -6,7 +6,20 @@
 
 [한국어](README.ko.md)
 
+<p align="center">
+  <img src="https://github.com/choihyunsus/n2-mimir/raw/refs/heads/main/docs/images/comic.png" alt="Keep a record of what an AI tried and what happened, then find useful experience for the next task." width="640">
+</p>
+
+Keep a record of what an AI tried and what happened, then find useful experience for the next task.
+
+A story illustrating the feature, rather than a screenshot of the app.
+
+<details>
+<summary>View the workflow</summary>
+
 ![Record experience → Keep its evidence → Recall useful records](https://github.com/choihyunsus/n2-mimir/raw/refs/heads/main/docs/images/overview.svg)
+
+</details>
 
 ## When to use it
 
