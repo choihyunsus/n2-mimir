@@ -1,140 +1,63 @@
-# n2-mimir 3.0.3
+# N2 Mimir
 
-Version 3.0.3 explicitly enforces the deadline throughout response body reads, including transports that fail to propagate cancellation after headers arrive.
+**Keep a record of what an AI tried and what happened, then find useful experience for the next task.**
 
-Version 3.0.2 fixes a stalled HTTP cancellation that could prevent a completed read or response-size error from returning. Stream cleanup releases the reader without waiting for the transport cancellation to settle. Failed HTTP responses follow the same bounded cleanup path. The package also includes the SQLite type dependency required by its public TypeScript declarations.
+[![release: 3.0.3](https://img.shields.io/badge/release-3.0.3-2563eb)](https://github.com/choihyunsus/n2-mimir/releases/tag/v3.0.3) [![runtime: Node.js 22+](https://img.shields.io/badge/runtime-Node.js%2022%2B-334155)](https://github.com/choihyunsus/n2-mimir/blob/main/docs/reference.md) [![license: terms](https://img.shields.io/badge/license-terms-64748b)](https://github.com/choihyunsus/n2-mimir/blob/main/LICENSE)
 
-A local experience-learning library for AI agents. Mimir stores observations, derives reviewable insights, recalls relevant evidence, and records how those insights performed.
+[한국어](README.ko.md)
 
-[한국어 안내](README.ko.md)
+![Record experience → Keep its evidence → Recall useful records](https://github.com/choihyunsus/n2-mimir/raw/refs/heads/main/docs/images/overview.svg)
 
-## SQLite runtime update
+## When to use it
 
-Version 3.0.1 upgrades the optional Rust engine to SQLite 3.54.1 and requires SQLite 3.51.3 or later at runtime. Install a current `better-sqlite3` 12.x driver. The minimum includes the upstream WAL-reset data-integrity fix. A deterministic isolated test reproduced data loss in the old native engine and verified committed-data preservation in both replacements. [SQLite release details](https://www.sqlite.org/releaselog/3_51_3.html)
+Connect it to an app that needs to revisit past mistakes or find approaches that worked before.
 
-## Install
+Learning here means saving and reusing experience and guidance. The connected app decides what to pass to the model and checks whether the result is valid.
 
-Download `n2-mimir-3.0.3.tgz` from the GitHub release and install it with a supported SQLite driver.
+## Try it
+
+Run `node --version` in a terminal and check for Node.js 22 or later. These commands create a fresh practice folder and install the GitHub release. Keep the example file and database in this folder.
 
 ```sh
-npm install ./n2-mimir-3.0.3.tgz better-sqlite3@^12.8.0
+mkdir n2-mimir-demo
+cd n2-mimir-demo
+npm init -y
+npm install https://github.com/choihyunsus/n2-mimir/releases/download/v3.0.3/n2-mimir-3.0.3.tgz
 ```
 
-Node.js 20.3 or later is required. Release checks run on Windows with Node.js 24.13. Both ESM and CommonJS exports include TypeScript declarations. The package uses `better-sqlite3` by default. An optional locally built Rust addon uses the same SQLite schema.
+If installation reports a SQLite build error, you may need your platform’s C/C++ build tools. See the [installation reference](https://github.com/choihyunsus/n2-mimir/blob/main/docs/reference.md) for platform requirements.
 
-## Record, digest, recall
+Save the following as `demo.mjs` in the folder where you ran the install command.
 
 ```js
-import { Mimir } from 'n2-mimir';
-
-const memory = new Mimir({ dbPath: './mimir.db', tokenBudget: 500 });
-const scope = { project: 'demo', agent: 'worker' };
+import { MimirDatabase } from 'n2-mimir/storage';
+const memory = new MimirDatabase('./demo.db');
 try {
-  memory.deltaLearn({
-    ...scope,
-    type: 'failure',
-    category: 'testing',
-    context: 'Integration test',
-    action: 'Run the test with the old configuration',
-    outcome: 'The test failed',
-    sourceRef: 'test-run-001',
-    sessionId: 'session-001',
+  const saved = memory.insertExperience({
+    project: 'demo', agent: 'assistant', type: 'pattern',
+    category: 'notes', context: 'First memory',
+    action: 'Save a note', outcome: 'Remember to check the tests',
   });
-  const result = await memory.digest(scope);
-  console.log(result.collectionErrors, result.insightErrors);
-  console.log(memory.overlay('integration test configuration', scope.project, scope.agent));
+  console.log(memory.getExperience(saved.id).outcome);
 } finally {
   memory.close();
 }
 ```
 
-Supply a stable `sourceRef` for replayable observations and a new reference for a genuinely new observation. Identical referenced input reuses its stored record. Different outcomes remain separate. `digest` reports newly created insights and updated insights separately.
-
-Mimir's learning changes stored experience, derived guidance and prompt context. The host selects which guidance to use. Pattern extraction and derivation checks run locally. Embeddings and web study are explicit optional operations.
-
-## Durable study sessions
-
-```js
-const session = memory.study.start({
-  ...scope, topic: 'SQLite recovery', sessionId: 'study-001',
-});
-memory.study.add(session.session.id, scope, {
-  id: 'entry-001', topic: 'SQLite recovery',
-  action: 'Restart after a committed write', outcome: 'The stored row survived',
-  entryType: 'success', category: 'database',
-});
-const receipt = memory.study.end(session.session.id, scope);
-```
-
-Session state survives reopening the database. Repeating `end` returns the stored receipt. Conflicting entry replays fail. Observations, source links, derivation records and completion commit together. A session accepts up to 100 entries. `cancel` retains its recorded entries.
-
-## Source-aware insights
-
-The `n2-mimir/storage` entry exports `MimirDatabase` for direct storage operations. `insertInsight` accepts `sourceIds` and an explicit `project`. Linked evidence must belong to one project and the insight's agent.
-
-Derived insights retain premise, reasoning, hypothesis, verification and conclusion records. Inspect them through `memory.reasoning.traceInsight(id)`. Strict stage order prevents new cyclic edges. The verification flag records deterministic evidence checks, including distinct premises and a linked success. Hosts still evaluate whether the conclusion is justified.
-
-`memory.reasoning.invalidateEvidence(experienceId)` records invalidation, lowers downstream confidence and makes affected insights dormant. A later derivation continues to observe that invalidation. Historical observations and chains remain available. Automatic graduation checks derived verification results. Legacy manually authored insights continue to use their explicit votes and effect measurements.
-
-`db.recordEffect(measurement, true)` stores a measurement and its optional vote atomically. An identical `(insightId, sessionId)` replay has no additional effect. Conflicting payloads fail. The host supplies the measurements.
-
-## Soul integration and data contracts
-
-Point Mimir at the same **Mimir database file** used by a distribution Soul 9.2 installation. Soul also has separate session files and other storage. Choose the actual configured Mimir path for that installation.
-
-The shared `experiences`, `insights`, `tags`, `embeddings`, `effect_tracking`, `experience_insight_links`, `insight_links`, `tag_similarity` and `meta` tables use the existing Soul field names. Shared `schema_version` remains 2. Additive `mimir_*` study, reasoning and preview tables have separate version keys. Vector blobs use little-endian float32 values with the model identifier. New timestamps use UTC.
-
-```js
-import { LedgerAdapter } from 'n2-mimir';
-memory.registerAdapter(new LedgerAdapter('/path/to/soul/data'));
-await memory.digest(scope);
-```
-
-The adapter reads `projects/<project>/ledger/YYYY/MM/DD/*.json` and filters by project and agent. Session reports retain their reported status. JSONL input uses `JsonlAdapter`. `GenericAdapter` keeps observations until `acknowledge` after successful storage. `digest` handles that acknowledgment.
-
-Daebung's existing prefixed tables and local-time dates require an explicit migration when integrating the standalone distributions. This release reads the distribution Soul contract directly.
-
-## Additional operations
-
-- `autoExtract(messages, scope, accept)` extracts keyword-classified candidates from user-role messages. The optional predicate lets the host apply its ingestion policy. Classification is available through `classifyMemory` and `extractCandidates`.
-- `maintenance.browseInsights` provides scoped text search, pagination and totals over all matching rows. Set `sort` to `freshness` for category-sensitive temporal ranking.
-- `maintenance.freshExperiences` ranks scoped observations before applying the result limit.
-- `maintenance.mergeDuplicates` merges exact descriptions and summaries within one evidenced project and agent. Source records and retired duplicates remain traceable.
-- `maintenance.archiveExperiences` adds bounded previews for mature linked observations. It processes up to 1,000 observations per call and retains the complete original text.
-
-## Optional embeddings and web study
-
-```js
-const semanticMemory = new Mimir({
-  dbPath: './mimir.db',
-  llm: {
-    provider: 'openai',
-    model: 'text-embedding-3-small',
-    endpoint: 'https://api.openai.com/v1',
-    apiKey: process.env.OPENAI_API_KEY,
-  },
-});
-```
-
-The client supports OpenAI-compatible `/v1/embeddings` and Ollama `/api/embeddings` contracts. It validates vectors, bounds input and response sizes, limits cache entries, and rejects credential-bearing redirects. The Anthropic setting leaves embeddings inactive. Failed embedding requests fall back to lexical recall. API protocol references are available from [OpenAI](https://developers.openai.com/api/reference/resources/embeddings/methods/create) and [Ollama](https://github.com/ollama/ollama/blob/main/docs/api.md).
-
-`autoStudy(topic, { project, agent })` searches DuckDuckGo HTML, crawls bounded pages, extracts claims and compares source hosts. Its legacy `verified` label means heuristic corroboration by at least three hosts. Factual review remains necessary. Contradictory and below-threshold results are excluded from learned observations. The host controls network access, trusted sources and model prompt integration. Search HTML can change independently of this package.
-
-Overlay budgets use `ceil(text.length / 4)` as a character-based estimate. Use a model tokenizer in the host for a strict model-specific token ceiling.
-
-## Build and verification
-
 ```sh
-npm ci
-npm run build
-npm run typecheck
-npm run test:ts
-npm run build:native
-npm run test:rust
+node demo.mjs
 ```
 
-Development tools require Node.js 22.18 or later. Rust builds require Rust 1.98 and platform C/C++ build tools. `build:native` creates a machine-specific addon for local development. Release archives contain the portable JavaScript build. See the [feature and verification map](docs/FEATURES.md) for test scope and integration boundaries.
+`Remember to check the tests` appears and the record is stored in `demo.db`.
 
-## License
+## Using it with Soul
 
-The repository's `LICENSE` specifies custom noncommercial and commercial licensing terms. Package metadata points to that file. Read it together with `LICENSE-APACHE` and `THIRD-PARTY-NOTICES`. Daebung-derived portions retain their MIT notices. The Rust core's declared license is MIT.
+Point connected N2 modules at the same `mimir.db` file. `project` names the work and `agent` names the AI identity you will keep using. Match those values to continue working with the same records. Standalone use follows the same field layout.
+
+## Next steps and reference
+
+The [full reference](https://github.com/choihyunsus/n2-mimir/blob/main/docs/reference.md) covers app integration, APIs, supported features, recovery and validation. The [release page](https://github.com/choihyunsus/n2-mimir/releases/tag/v3.0.3) contains the installable version and release notes.
+
+A few terms used in the reference: **MCP** connects tools to an AI app, a **database** stores records, and the **host** is the app that connects and runs this module.
+
+Review the [license](https://github.com/choihyunsus/n2-mimir/blob/main/LICENSE) for use and redistribution. Dependencies can have their own terms, including commercial-use conditions described in the reference.
